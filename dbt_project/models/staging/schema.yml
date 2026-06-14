@@ -1,0 +1,47 @@
+version: 2
+
+models:
+  - name: stg_prices
+    description: >
+      Vue de staging sur raw_prices. Filtre les prix invalides
+      et exclut le benchmark. Source pour tous les modèles marts.
+    columns:
+      - name: date
+        description: Date de cotation
+        data_tests:
+          - not_null
+
+      - name: ticker
+        description: Symbole boursier, par exemple BNP.PA ou CW8.PA
+        data_tests:
+          - not_null
+
+      - name: close_price
+        description: Prix de clôture
+        data_tests:
+          - not_null
+
+      - name: asset_type
+        description: Type d'actif — action, etf ou index
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ["action", "etf", "index"]
+
+      - name: daily_return
+        description: Rendement journalier. Null pour le premier jour de chaque ticker.
+
+  - name: stg_benchmark
+    description: >
+      Vue isolant le CAC 40 avec son rendement journalier.
+    columns:
+      - name: date
+        description: Date de cotation du benchmark
+        data_tests:
+          - not_null
+          - unique
+
+      - name: benchmark_close
+        description: Prix de clôture du benchmark CAC 40
+        data_tests:
+          - not_null

@@ -1,0 +1,84 @@
+version: 2
+
+models:
+  - name: mart_risk_signals
+    description: >
+      Table principale de l'Agent Risk. Contient tous les indicateurs
+      de risque calculés pour chaque (ticker, date) :
+      rendements glissants, volatilité, drawdown, volume anormal,
+      performance relative vs CAC 40.
+    columns:
+      - name: date
+        description: Date de cotation
+        data_tests:
+          - not_null
+
+      - name: ticker
+        data_tests:
+          - not_null
+
+      - name: close_price
+        data_tests:
+          - not_null
+
+      - name: daily_return
+        description: >
+          Rendement journalier. Null pour le premier jour de chaque ticker
+          car il n'y a pas de prix précédent disponible.
+
+      - name: return_5d
+        description: Variation du prix sur les 5 derniers jours de cotation.
+
+      - name: return_20d
+        description: Variation du prix sur les 20 derniers jours de cotation.
+
+      - name: vol_5d
+        description: Écart-type des daily_return sur les 5 derniers jours.
+
+      - name: vol_20d
+        description: >
+          Écart-type des daily_return sur 20 jours.
+          Indicateur de risque principal.
+
+      - name: drawdown
+        description: >
+          Recul depuis le plus haut des 252 derniers jours.
+          Exemple : -0.08 = -8% depuis le pic annuel.
+
+      - name: volume_ratio_20d
+        description: >
+          Volume du jour divisé par le volume moyen des 20 derniers jours.
+          Exemple : 2.3 = volume 2.3x supérieur à la normale.
+
+      - name: relative_perf_5d
+        description: >
+          Surperformance ou sous-performance vs CAC 40 sur 5 jours.
+          Exemple : -0.025 = 2.5% de sous-performance vs l'indice.
+
+      - name: signal_count
+        description: >
+          Nombre d'indicateurs simultanément en zone d'alerte.
+
+  - name: mart_portfolio_value
+    description: >
+      Table de valorisation du portefeuille. Joint les positions
+      de l'utilisateur avec les derniers prix de marché.
+      Retourne vide si aucune position n'est enregistrée.
+    columns:
+      - name: ticker
+        data_tests:
+          - not_null
+
+      - name: market_value
+        description: Valeur de marché actuelle en euros.
+        data_tests:
+          - not_null
+
+      - name: pnl
+        description: Profit/Loss latent en euros.
+
+      - name: pnl_pct
+        description: Profit/Loss latent en pourcentage depuis le prix d'achat.
+
+      - name: weight
+        description: Poids de la ligne dans le portefeuille total.

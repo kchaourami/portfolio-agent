@@ -1,0 +1,12 @@
+portfolio_agent:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ../data/portfolio.duckdb   # chemin relatif depuis dbt_project/
+      threads: 4
+
+    prod:
+      type: duckdb
+      path: ../data/portfolio.duckdb
+      threads: 4
