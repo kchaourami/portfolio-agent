@@ -1,0 +1,14 @@
+pandas
+yfinance
+pydantic-settings
+duckdb==1.1.3
+dbt-core==1.8.9
+dbt-duckdb==1.8.4
+httpx
+fastapi
+uvicorn
+python-dotenv
+anthropic
+langgraph
+streamlit
+apscheduler
