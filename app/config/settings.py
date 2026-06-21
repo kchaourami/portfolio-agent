@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     ALERT_DRAWDOWN_PCT: float = -0.05      # -5%
     ALERT_VOLUME_RATIO: float = 2.0        # 2x volume moyen
     ALERT_UNDERPERF_PCT: float = -0.03     # -3% vs CAC 40
+    ALERT_VOLATILITY_PCT: float = 0.02              # vol_20d
+    ALERT_SECTOR_CONCENTRATION_PCT: float = 0.30    # poids max par secteur
 
     class Config:
         env_file = ".env"

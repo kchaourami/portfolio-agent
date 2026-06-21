@@ -153,14 +153,7 @@ class DuckDBRepository:
     def upsert_prices(self, df: pd.DataFrame) -> int:
         """
         Insère ou met à jour les prix dans raw_prices.
-        Stratégie : DELETE + INSERT sur les (date, ticker) existants
-        pour garantir l'idempotence des batchs quotidiens.
-
-        Args:
-            df : DataFrame au schéma commun du DataCollector
-
-        Returns:
-            Nombre de lignes écrites
+        Stratégie : DELETE + INSERT sur les (date, ticker) existants.
         """
         self._ensure_connected()
 
@@ -170,30 +163,96 @@ class DuckDBRepository:
 
         self._validate_prices_schema(df)
 
-        # Supprimer les lignes existantes pour ces (date, ticker)
-        # avant ré-insertion — évite les doublons sur les re-runs
-        pairs = df[["date", "ticker"]].drop_duplicates()
-        self._conn.execute("""
-            DELETE FROM raw_prices
-            WHERE (date, ticker) IN (
-                SELECT date, ticker FROM pairs
+        prices_df = df.copy()
+
+        # Colonnes optionnelles attendues par raw_prices
+        if "isin" not in prices_df.columns:
+            prices_df["isin"] = ""
+        if "company_name" not in prices_df.columns:
+            prices_df["company_name"] = prices_df["ticker"]
+        if "asset_type" not in prices_df.columns:
+            prices_df["asset_type"] = "action"
+        if "sector" not in prices_df.columns:
+            prices_df["sector"] = None
+        if "daily_return" not in prices_df.columns:
+            prices_df["daily_return"] = pd.NA
+
+        # Normalisation explicite des types pour DuckDB
+        prices_df["date"] = pd.to_datetime(prices_df["date"]).dt.date
+        prices_df["ticker"] = prices_df["ticker"].astype("object")
+        prices_df["isin"] = prices_df["isin"].fillna("").astype("object")
+        prices_df["company_name"] = prices_df["company_name"].fillna("").astype("object")
+        prices_df["asset_type"] = prices_df["asset_type"].fillna("action").astype("object")
+        prices_df["sector"] = prices_df["sector"].where(prices_df["sector"].notna(), None).astype("object")
+        prices_df["close_price"] = pd.to_numeric(prices_df["close_price"], errors="coerce")
+        prices_df["volume"] = pd.to_numeric(prices_df["volume"], errors="coerce").fillna(0).astype("int64")
+        prices_df["daily_return"] = pd.to_numeric(prices_df["daily_return"], errors="coerce")
+        prices_df["source"] = prices_df["source"].fillna("unknown").astype("object")
+
+        prices_df = prices_df[
+            [
+                "date",
+                "ticker",
+                "isin",
+                "company_name",
+                "asset_type",
+                "sector",
+                "close_price",
+                "volume",
+                "daily_return",
+                "source",
+            ]
+        ]
+
+        # Supprimer les lignes sans prix exploitable
+        before_drop = len(prices_df)
+        prices_df = prices_df.dropna(subset=["date", "ticker", "close_price"])
+        dropped = before_drop - len(prices_df)
+
+        if dropped > 0:
+            logger.warning(
+                "%s lignes supprimées avant insertion DuckDB car invalides",
+                dropped,
             )
-        """)
 
-        # Insérer le nouveau batch
-        self._conn.execute("""
-            INSERT INTO raw_prices
-                (date, ticker, isin, company_name, asset_type,
-                 sector, close_price, volume, daily_return, source)
-            SELECT
-                date, ticker, isin, company_name, asset_type,
-                sector, close_price, volume, daily_return, source
-            FROM df
-        """)
+        pairs_df = prices_df[["date", "ticker"]].drop_duplicates()
 
-        count = len(df)
+        self._conn.register("prices_df", prices_df)
+        self._conn.register("pairs_df", pairs_df)
+
+        try:
+            # DuckDB : utiliser DELETE USING au lieu de WHERE (date, ticker) IN (...)
+            self._conn.execute("""
+                DELETE FROM raw_prices
+                USING pairs_df
+                WHERE raw_prices.date = pairs_df.date
+                AND raw_prices.ticker = pairs_df.ticker
+            """)
+
+            self._conn.execute("""
+                INSERT INTO raw_prices
+                    (date, ticker, isin, company_name, asset_type,
+                    sector, close_price, volume, daily_return, source)
+                SELECT
+                    date,
+                    ticker,
+                    isin,
+                    company_name,
+                    asset_type,
+                    sector,
+                    close_price,
+                    volume,
+                    daily_return,
+                    source
+                FROM prices_df
+            """)
+        finally:
+            self._conn.unregister("prices_df")
+            self._conn.unregister("pairs_df")
+
+        count = len(prices_df)
         logger.info("upsert_prices terminé | lignes=%d", count)
-        return count
+        return count    
 
     # ------------------------------------------------------------------
     # Écriture — raw_macro
