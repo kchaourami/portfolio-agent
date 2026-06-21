@@ -7,6 +7,9 @@ __pycache__/
 venv/
 env/
 
+# Package markers
+**/__init__.py
+
 # Environment variables / secrets
 .env
 .env.*
