@@ -9,8 +9,9 @@ de l'utilisateur (portfolio) pour calculer :
   - pnl           : profit/loss latent en euros
   - pnl_pct       : profit/loss latent en pourcentage
   - weight        : poids de la ligne dans le portefeuille total
+  - sector        : secteur de l'actif (ajouté pour SECTOR_CONCENTRATION)
 
-Consommé par : Agent Analyste, dashboard Streamlit
+Consommé par : Agent Analyste, dashboard Streamlit, risk_calculator.py
 
 Note : si la table portfolio est vide (pas encore de positions saisies),
 ce modèle retourne un DataFrame vide — comportement attendu.
@@ -24,6 +25,7 @@ latest_prices as (
         ticker,
         date        as price_date,
         close_price as latest_close,
+        sector,
         daily_return,
         return_5d,
         vol_20d,
@@ -45,6 +47,7 @@ portfolio_valued as (
 
         lp.price_date,
         lp.latest_close,
+        lp.sector,
         lp.daily_return,
         lp.return_5d,
         lp.vol_20d,
