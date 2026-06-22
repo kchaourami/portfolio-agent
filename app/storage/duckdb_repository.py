@@ -281,9 +281,9 @@ class DuckDBRepository:
 
         self._conn.execute("""
             DELETE FROM raw_macro
-            WHERE (date, series_key) IN (
-                SELECT date, series_key FROM df
-            )
+            USING df
+            WHERE raw_macro.date = df.date
+              AND raw_macro.series_key = df.series_key
         """)
 
         self._conn.execute("""

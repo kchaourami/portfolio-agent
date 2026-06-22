@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     ALERT_VOLATILITY_PCT: float = 0.02              # vol_20d
     ALERT_SECTOR_CONCENTRATION_PCT: float = 0.30    # poids max par secteur
 
+        # Démo — distingue les données fictives des vraies, pour plus tard
+    #DEMO_MODE: bool = True
+    #DEMO_DISCLAIMER: str = (
+    #    "Portefeuille fictif à des fins de démonstration — "
+    #   "ne reflète pas une position d'investissement réelle."
+    #)
+
     class Config:
         env_file = ".env"
 
