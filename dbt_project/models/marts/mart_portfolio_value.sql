@@ -10,6 +10,8 @@ de l'utilisateur (portfolio) pour calculer :
   - pnl_pct       : profit/loss latent en pourcentage
   - weight        : poids de la ligne dans le portefeuille total
   - sector        : secteur de l'actif (ajouté pour SECTOR_CONCENTRATION)
+  - relative_perf_5d : sous/sur-performance vs CAC 40 (ajouté pour le
+                        prompt de l'Agent Analyste — "Comparaison CAC 40")
 
 Consommé par : Agent Analyste, dashboard Streamlit, risk_calculator.py
 
@@ -28,6 +30,7 @@ latest_prices as (
         sector,
         daily_return,
         return_5d,
+        relative_perf_5d,
         vol_20d,
         drawdown,
         signal_count
@@ -50,6 +53,7 @@ portfolio_valued as (
         lp.sector,
         lp.daily_return,
         lp.return_5d,
+        lp.relative_perf_5d,
         lp.vol_20d,
         lp.drawdown,
         lp.signal_count,

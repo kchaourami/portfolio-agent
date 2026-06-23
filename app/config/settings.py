@@ -7,9 +7,8 @@ class Settings(BaseSettings):
     DBT_PROJECT_DIR: str = "dbt_project"
 
     # API keys (optionnelles pour le MVP)
-    INSEE_API_KEY: str = ""
-    FMP_API_KEY: str = ""
-    ANTHROPIC_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.5-flash"
 
     # Portfolio (portefeuille par défaut pour les tests)
     DEFAULT_TICKERS: list[str] = [
@@ -27,11 +26,11 @@ class Settings(BaseSettings):
     ALERT_SECTOR_CONCENTRATION_PCT: float = 0.30    # poids max par secteur
 
         # Démo — distingue les données fictives des vraies, pour plus tard
-    #DEMO_MODE: bool = True
-    #DEMO_DISCLAIMER: str = (
-    #    "Portefeuille fictif à des fins de démonstration — "
-    #   "ne reflète pas une position d'investissement réelle."
-    #)
+    DEMO_MODE: bool = True
+    DEMO_DISCLAIMER: str = (
+        "Portefeuille fictif à des fins de démonstration — "
+       "ne reflète pas une position d'investissement réelle."
+    )
 
     class Config:
         env_file = ".env"
