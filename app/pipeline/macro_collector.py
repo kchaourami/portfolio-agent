@@ -9,43 +9,85 @@ macroéconomiques nécessaires au contexte de l'Agent Analyste :
   - EURUSD       : taux de change EUR/USD
   - INFLATION_FR : inflation France en glissement annuel (%)
 
-Sources actuelles (toutes deux des API SDMX 2.1 ouvertes, AUCUNE clé requise) :
-  - BCE Data Portal           → ECB_RATE, EURUSD
-  - Eurostat (HICP France)    → INFLATION_FR
+Sources :
+  - BCE Data Portal  → ECB_RATE, EURUSD (API SDMX 2.1, CSV, aucune clé)
+  - INSEE BDM        → INFLATION_FR, SOURCE PRINCIPALE (API SDMX, XML,
+                        aucune authentification requise — confirmé par le
+                        support INSEE le 23/06/2026, cf. note ci-dessous)
+  - Eurostat (HICP)  → INFLATION_FR, REPLI automatique si INSEE échoue
 
 Normalise tout au schéma commun de raw_macro : (date, series_key, value,
 source, fetched_at) — consommé ensuite par dbt (stg_macro.sql, inchangé).
 
 ---------------------------------------------------------------------------
-NOTE MÉTHODOLOGIQUE — changement de source pour INFLATION_FR
+HISTORIQUE — résolution du blocage INSEE
 ---------------------------------------------------------------------------
-L'API officielle INSEE (api.insee.fr) reste la source visée à terme, mais
-son flux d'authentification OAuth2 (client_credentials) est actuellement
-défaillant côté serveur (testé avec 2 clients HTTP différents, sur 2
-réseaux différents — cf. ticket envoyé au support INSEE). En attendant
-une réponse, INFLATION_FR est calculée à partir de l'IPCH (indice
-harmonisé européen, Eurostat) plutôt que l'IPC national INSEE — légère
-différence méthodologique à documenter dans le mémoire, mais l'API
-Eurostat est ouverte, stable, et à jour.
+Le flux OAuth2 client_credentials (POST /token) qui semblait défaillant
+était en réalité un problème d'information erronée du support, pas un bug
+serveur réel : l'API "Séries chronologiques" (BDM) sur le nouveau portail
+Gravitee NE NÉCESSITE AUCUNE AUTHENTIFICATION. Un simple GET suffit. Tout
+le travail de diagnostic OAuth2 (client_credentials, token, etc.) n'était
+donc pas nécessaire pour CETTE API précise — confirmé par un appel réel
+le 23/06/2026 (idbank test 010600351, réponse XML reçue sans aucun header
+d'authentification).
 
-Les fonctions pour l'API INSEE officielle sont conservées plus bas
-(préfixées INSEE_, désactivées) pour réactivation rapide si le support
-débloque la situation.
+Découverte associée : la réponse est en XML SDMX-ML (StructureSpecificData),
+pas en JSON comme supposé initialement — le parsing ci-dessous est basé sur
+la structure exacte de cette réponse réelle, pas une supposition.
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import time
+import xml.etree.ElementTree as ET
 from datetime import date
 
 import httpx
 import pandas as pd
 
-from app.config.settings import settings
 from app.storage.duckdb_repository import DuckDBRepository
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# GET avec re-essai — micro-coupures réseau observées empiriquement sur les
+# 3 sources (BCE, Eurostat, INSEE) lors de tests réels (23/06/2026) : la
+# même requête échoue puis réussit souvent au 2e essai. Pas une garantie,
+# mais ça absorbe la majorité de ces aléas transitoires sans complexité
+# excessive (pas de backoff exponentiel élaboré, juste 2 tentatives).
+# ---------------------------------------------------------------------------
+
+def _get_with_retry(
+    url: str,
+    params: dict | None = None,
+    headers: dict | None = None,
+    timeout: float = 15,
+    retries: int = 1,
+    backoff_seconds: float = 2.0,
+) -> httpx.Response:
+    """GET avec jusqu'à `retries` re-essais en cas d'erreur réseau transitoire."""
+    last_exc: Exception | None = None
+
+    for attempt in range(retries + 1):
+        try:
+            return httpx.get(url, params=params, headers=headers, timeout=timeout)
+        except httpx.TransportError as exc:
+            last_exc = exc
+            logger.warning(
+                "Tentative %d/%d échouée pour %s : %s",
+                attempt + 1,
+                retries + 1,
+                url,
+                exc,
+            )
+            if attempt < retries:
+                time.sleep(backoff_seconds)
+
+    raise last_exc  # toutes les tentatives ont échoué
+
 
 
 # ---------------------------------------------------------------------------
@@ -58,29 +100,17 @@ ECB_RATE_KEY = "D.U2.EUR.4F.KR.MRR_FR.LEV"     # Taux de refinancement principal
 ECB_FX_FLOW = "EXR"
 ECB_FX_KEY = "D.USD.EUR.SP00.A"                 # EUR/USD, cours de référence quotidien
 
+INSEE_BASE_URL = "https://api.insee.fr/series/BDM/data/SERIES_BDM"
+INSEE_INFLATION_IDBANK = "011814056"            # IPC France, base 2025, ensemble hors tabac
+INSEE_NS = {"message": "http://www.sdmx.org/resources/sdmxml/schemas/v2_1/message"}
+
 EUROSTAT_BASE_URL = "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data"
-# ATTENTION : PRC_HICP_MANR (utilisé initialement) est ARCHIVÉ ET FIGÉ depuis
-# décembre 2025 — Eurostat a basculé vers une nouvelle nomenclature (ECOICOP
-# version 2, obligatoire depuis janvier 2026). Le dataset actif équivalent
-# est PRC_HICP_MINR. Le code unité "RCH_A" (taux annuel direct), confirmé
-# fonctionnel sur l'ancien MANR, renvoie une erreur 400 sur MINR — code
-# unité probablement différent sur ce nouveau dataset, non confirmé.
-# On utilise donc "I25" (indice brut, base 2025=100), confirmé fonctionnel
-# par la documentation du package R 'hicp', et on calcule le glissement
-# annuel nous-mêmes (même logique que prévu pour l'INSEE).
 EUROSTAT_INFLATION_FLOW = "PRC_HICP_MINR"
 EUROSTAT_INFLATION_KEY = "M.I25.TOTAL.FR"       # Indice mensuel, base 2025, tous postes (COICOP18=TOTAL), France
-# Historique : la dimension s'appelait "COICOP" avec le code "CP00" sous
-# l'ancienne nomenclature (ECOICOP v1, dataset PRC_HICP_MANR, frozen).
-# Sous ECOICOP v2 (PRC_HICP_MINR), la dimension est renommée "COICOP18"
-# (alignement UN COICOP 2018) et le code "tous postes" devient "TOTAL" —
-# confirmé par le message d'erreur 400 reçu en test, qui nommait
-# explicitement la dimension "COICOP18".
 
 
 # ---------------------------------------------------------------------------
-# Fetch générique SDMX 2.1 — BCE et Eurostat exposent toutes les deux ce
-# format CSV standard, donc une seule fonction sert pour les deux sources.
+# Fetch générique SDMX 2.1 CSV — BCE et Eurostat
 # ---------------------------------------------------------------------------
 
 def fetch_sdmx_csv(
@@ -97,14 +127,11 @@ def fetch_sdmx_csv(
 
     Args:
         base_url     : racine de l'API (ECB_BASE_URL ou EUROSTAT_BASE_URL)
-        flow_ref     : identifiant du dataflow (ex: "EXR", "PRC_HICP_MANR")
-        key          : clé de la série (ex: "D.USD.EUR.SP00.A", "M..CP00.FR")
+        flow_ref     : identifiant du dataflow (ex: "EXR", "PRC_HICP_MINR")
+        key          : clé de la série
         last_n       : nombre d'observations les plus récentes
-        format_param : valeur du paramètre 'format' — diffère selon la
-                       source : "csvdata" pour la BCE, "SDMX-CSV" pour
-                       Eurostat (ce n'est PAS un standard SDMX universel,
-                       chaque implémentation choisit son propre identifiant
-                       de format CSV — vérifié séparément pour chaque API).
+        format_param : "csvdata" pour la BCE, "SDMX-CSV" pour Eurostat —
+                       pas un standard universel, vérifié par source.
 
     Returns:
         DataFrame avec colonnes (TIME_PERIOD, OBS_VALUE)
@@ -112,7 +139,7 @@ def fetch_sdmx_csv(
     url = f"{base_url}/{flow_ref}/{key}"
     params = {"format": format_param, "lastNObservations": last_n}
 
-    response = httpx.get(url, params=params, timeout=15)
+    response = _get_with_retry(url, params=params, timeout=15)
 
     if response.status_code >= 400:
         raise RuntimeError(
@@ -124,22 +151,10 @@ def fetch_sdmx_csv(
     return df[["TIME_PERIOD", "OBS_VALUE"]]
 
 
-def fetch_eurostat_inflation_yoy(
-    last_n: int = 13,
-) -> pd.DataFrame:
+def fetch_eurostat_inflation_yoy(last_n: int = 13) -> pd.DataFrame:
     """
-    Calcule l'inflation France en glissement annuel (% sur 12 mois) à partir
-    de l'indice HICP brut (unit=I25, confirmé fonctionnel). Récupère 13 mois
-    d'historique pour comparer le dernier point au même mois de l'année
-    précédente — comportement déterministe, pas une donnée inventée.
-
-    Même logique que prévu initialement pour l'INSEE (cf. fonction réservée
-    plus bas dans ce fichier) — réutilisable telle quelle si on bascule un
-    jour vers l'API INSEE officielle.
-
-    Returns:
-        DataFrame à une ligne : (TIME_PERIOD, OBS_VALUE), où OBS_VALUE est
-        déjà le taux de glissement annuel en %.
+    Calcule l'inflation France (IPCH, glissement annuel) à partir de
+    l'indice HICP brut Eurostat. Source de REPLI si l'INSEE échoue.
     """
     df = fetch_sdmx_csv(
         EUROSTAT_BASE_URL,
@@ -148,6 +163,89 @@ def fetch_eurostat_inflation_yoy(
         last_n=last_n,
         format_param="SDMX-CSV",
     )
+    return _compute_yoy(df)
+
+
+# ---------------------------------------------------------------------------
+# Fetch INSEE BDM — XML SDMX-ML, AUCUNE authentification requise
+# ---------------------------------------------------------------------------
+
+def fetch_insee_series(idbank: str, last_n: int = 1) -> pd.DataFrame:
+    """
+    Récupère les N dernières observations d'une série INSEE BDM.
+
+    Simple GET, aucun header d'authentification — confirmé par le support
+    INSEE (23/06/2026). La réponse est en XML SDMX-ML, parsée par
+    _parse_insee_xml() selon la structure réelle observée.
+
+    Args:
+        idbank : identifiant de la série (9 chiffres)
+        last_n : nombre d'observations les plus récentes
+
+    Returns:
+        DataFrame avec colonnes (TIME_PERIOD, OBS_VALUE)
+    """
+    url = f"{INSEE_BASE_URL}/{idbank}"
+    params = {"lastNObservations": last_n}
+
+    response = _get_with_retry(url, params=params, timeout=15)
+    response.raise_for_status()
+
+    return _parse_insee_xml(response.text)
+
+
+def _parse_insee_xml(xml_text: str) -> pd.DataFrame:
+    """
+    Parse la réponse XML SDMX-ML (StructureSpecificData) de l'API INSEE BDM.
+
+    Structure confirmée par un appel réel (23/06/2026, idbank 010600351) :
+        <message:DataSet>
+            <Series IDBANK="..." ...>
+                <Obs TIME_PERIOD="2026-Q1" OBS_VALUE="108.6" .../>
+                ...
+            </Series>
+        </message:DataSet>
+    <Series> et <Obs> n'ont pas de préfixe de namespace (contrairement à
+    <message:DataSet>), d'où le mélange "message:" / sans préfixe ci-dessous.
+    """
+    root = ET.fromstring(xml_text)
+    dataset = root.find("message:DataSet", INSEE_NS)
+
+    if dataset is None:
+        raise ValueError("Structure XML INSEE inattendue : <message:DataSet> introuvable")
+
+    rows: list[dict] = []
+    for series in dataset.findall("Series"):
+        for obs in series.findall("Obs"):
+            rows.append(
+                {
+                    "TIME_PERIOD": obs.get("TIME_PERIOD"),
+                    "OBS_VALUE": obs.get("OBS_VALUE"),
+                }
+            )
+
+    if not rows:
+        raise ValueError("Aucune observation trouvée dans la réponse INSEE")
+
+    return pd.DataFrame(rows)
+
+
+def fetch_insee_inflation_yoy(idbank: str = INSEE_INFLATION_IDBANK) -> pd.DataFrame:
+    """
+    Calcule l'inflation France en glissement annuel (% sur 12 mois) à partir
+    de l'indice IPC brut INSEE. Récupère 13 mois d'historique pour comparer
+    le dernier point au même mois de l'année précédente.
+    """
+    df = fetch_insee_series(idbank, last_n=13)
+    return _compute_yoy(df)
+
+
+def _compute_yoy(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcule un glissement annuel (%) à partir de 13 observations mensuelles
+    triées — logique commune à fetch_insee_inflation_yoy et
+    fetch_eurostat_inflation_yoy.
+    """
     df = df.sort_values("TIME_PERIOD").reset_index(drop=True)
 
     if len(df) < 13:
@@ -185,8 +283,11 @@ def _to_raw_macro(df: pd.DataFrame, series_key: str, source: str) -> pd.DataFram
 def collect_macro_data() -> pd.DataFrame:
     """
     Collecte les 3 indicateurs macro nécessaires au prompt de l'Agent
-    Analyste. Chaque source est isolée dans son propre try/except — l'échec
-    d'une source ne bloque pas les autres.
+    Analyste. Chaque source est isolée dans son propre try/except.
+
+    INFLATION_FR a une logique en 2 temps : INSEE (source officielle
+    nationale, préférée) puis Eurostat (repli automatique si INSEE échoue)
+    — résilience à 2 sources pour le même indicateur.
     """
     frames: list[pd.DataFrame] = []
 
@@ -203,10 +304,23 @@ def collect_macro_data() -> pd.DataFrame:
         logger.warning("Échec collecte EURUSD : %s", exc)
 
     try:
-        df_inflation = fetch_eurostat_inflation_yoy()
-        frames.append(_to_raw_macro(df_inflation, "INFLATION_FR", "eurostat"))
+        df_inflation = fetch_insee_inflation_yoy()
+        frames.append(_to_raw_macro(df_inflation, "INFLATION_FR", "insee"))
     except Exception as exc:
-        logger.warning("Échec collecte INFLATION_FR : %s", exc)
+        logger.warning(
+            "Échec collecte INFLATION_FR via INSEE (%s) — tentative via Eurostat (repli)",
+            exc,
+        )
+        try:
+            df_inflation = fetch_eurostat_inflation_yoy()
+            frames.append(_to_raw_macro(df_inflation, "INFLATION_FR", "eurostat"))
+        except Exception as exc2:
+            logger.warning(
+                "Échec collecte INFLATION_FR : aucune source disponible "
+                "(INSEE: %s | Eurostat: %s)",
+                exc,
+                exc2,
+            )
 
     if not frames:
         logger.error("Aucune donnée macro collectée — toutes les sources ont échoué")
@@ -234,54 +348,3 @@ if __name__ == "__main__":
         written = run_macro_collector(repo)
         print(f"\n✓ {written} ligne(s) macro écrite(s)\n")
         print(repo.fetch_latest_macro())
-
-
-# ===========================================================================
-# RÉSERVE — API officielle INSEE (BDM), DÉSACTIVÉE
-# ===========================================================================
-# Conservé pour réactivation rapide si le support INSEE débloque le flux
-# OAuth2 client_credentials. Non appelé par collect_macro_data() ci-dessus.
-#
-# Pour réactiver : remplacer l'appel Eurostat dans collect_macro_data() par
-# fetch_insee_inflation_yoy(), et s'assurer que settings.INSEE_API_KEY /
-# le client_secret sont disponibles.
-#
-# from datetime import datetime
-#
-# INSEE_BASE_URL = "https://api.insee.fr/series/BDM/data/SERIES_BDM"
-# INSEE_TOKEN_URL = "https://api.insee.fr/token"
-# INSEE_INFLATION_IDBANK = "011814056"  # IPC France, base 2025, hors tabac
-#
-#
-# def _insee_get_token(client_id: str, client_secret: str) -> str:
-#     response = httpx.post(
-#         INSEE_TOKEN_URL,
-#         auth=(client_id, client_secret),
-#         data={"grant_type": "client_credentials"},
-#         timeout=15,
-#     )
-#     response.raise_for_status()
-#     return response.json()["access_token"]
-#
-#
-# def fetch_insee_series(idbank: str, last_n: int = 1) -> pd.DataFrame:
-#     token = _insee_get_token(settings.INSEE_CLIENT_ID, settings.INSEE_CLIENT_SECRET)
-#     url = f"{INSEE_BASE_URL}/{idbank}"
-#     headers = {"Authorization": f"Bearer {token}"}
-#     params = {"lastNObservations": last_n}
-#     response = httpx.get(url, headers=headers, params=params, timeout=15)
-#     response.raise_for_status()
-#     # Schéma de réponse propre à l'INSEE (DataSet > Series > Serie > Obs)
-#     # à parser une fois confirmé via Swagger "Try it out" — voir schéma
-#     # OpenAPI récupéré le 21/06/2026 (composants Observation / Serie /
-#     # DataSet / Header) pour la structure exacte.
-#     raise NotImplementedError("Parsing à finaliser une fois l'auth débloquée")
-#
-#
-# def fetch_insee_inflation_yoy(idbank: str = INSEE_INFLATION_IDBANK) -> pd.DataFrame:
-#     df = fetch_insee_series(idbank, last_n=13)
-#     df = df.sort_values("TIME_PERIOD").reset_index(drop=True)
-#     latest = df.iloc[-1]
-#     year_ago = df.iloc[0]
-#     yoy_pct = (float(latest["OBS_VALUE"]) / float(year_ago["OBS_VALUE"]) - 1) * 100
-#     return pd.DataFrame([{"TIME_PERIOD": latest["TIME_PERIOD"], "OBS_VALUE": yoy_pct}])
