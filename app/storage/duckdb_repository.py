@@ -92,7 +92,20 @@ CREATE TABLE IF NOT EXISTS alerts (
 )
 """
 
-ALL_DDL = [DDL_RAW_PRICES, DDL_RAW_MACRO, DDL_PORTFOLIO, DDL_ALERTS]
+DDL_SYNTHESES = """
+CREATE TABLE IF NOT EXISTS syntheses (
+    synthesis_id  VARCHAR     NOT NULL,
+    generated_at  TIMESTAMP   NOT NULL,
+    content       VARCHAR     NOT NULL,
+    alert_count   INTEGER,
+    macro_regime  VARCHAR,
+    model         VARCHAR,
+    inserted_at   TIMESTAMP   DEFAULT current_timestamp,
+    PRIMARY KEY (synthesis_id)
+)
+"""
+
+ALL_DDL = [DDL_RAW_PRICES, DDL_RAW_MACRO, DDL_PORTFOLIO, DDL_ALERTS, DDL_SYNTHESES]
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +545,60 @@ class DuckDBRepository:
             WHERE alert_id IN (SELECT alert_id FROM ids_df)
         """)
 
+    # ------------------------------------------------------------------
+    # Syntheses (Agent Analyste)
+    # ------------------------------------------------------------------
+
+    def insert_synthesis(
+        self,
+        content: str,
+        alert_count: int = 0,
+        macro_regime: str | None = None,
+        model: str | None = None,
+    ) -> str:
+        """Persiste une synthèse générée par l'Agent Analyste."""
+        self._ensure_connected()
+
+        import uuid
+        synthesis_id = str(uuid.uuid4())
+
+        df = pd.DataFrame([{
+            "synthesis_id": synthesis_id,
+            "generated_at": pd.Timestamp.now(),
+            "content": content,
+            "alert_count": alert_count,
+            "macro_regime": macro_regime,
+            "model": model,
+        }])
+
+        self._conn.execute("""
+            INSERT INTO syntheses
+                (synthesis_id, generated_at, content, alert_count, macro_regime, model)
+            SELECT synthesis_id, generated_at, content, alert_count, macro_regime, model
+            FROM df
+        """)
+
+        logger.info("insert_synthesis terminé | synthesis_id=%s", synthesis_id)
+        return synthesis_id
+
+    def fetch_latest_synthesis(self) -> pd.DataFrame:
+        """Retourne la synthèse la plus récente (1 ligne, ou vide si aucune)."""
+        self._ensure_connected()
+        return self._conn.execute("""
+            SELECT * FROM syntheses
+            ORDER BY generated_at DESC
+            LIMIT 1
+        """).df()
+
+    def fetch_syntheses(self, limit: int = 20) -> pd.DataFrame:
+        """Retourne les N synthèses les plus récentes."""
+        self._ensure_connected()
+        return self._conn.execute(f"""
+            SELECT * FROM syntheses
+            ORDER BY generated_at DESC
+            LIMIT {limit}
+        """).df()
+    
     # ------------------------------------------------------------------
     # Utilitaires
     # ------------------------------------------------------------------
