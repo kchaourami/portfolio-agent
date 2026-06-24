@@ -6,18 +6,16 @@ Emplacement cible : app/orchestration/graph.py
 Orchestrateur LangGraph — enchaîne les pipelines déterministes déjà
 construits :
 
-    data_node ──> macro_node ──> dbt_run_node ──> alert_node   ──┐
-                                                 └─> regime_node  ──┴──> END
+    data_node ──> macro_node ──> dbt_run_node ──> alert_node  ──┐
+                                                 └─> regime_node ─┴──> analyst_node ──> END
 
-Chaque nœud est une fonction Python simple qui appelle un pipeline déjà
-existant — AUCUNE logique métier nouvelle ici, et surtout aucun appel LLM.
-Seul un futur nœud "analyst_node" (à venir) fera un appel à l'API Anthropic.
+Chaque nœud appelle un pipeline existant.
 
-data_node et macro_node sont SÉQUENTIELS (pas parallèles) — les deux font
-des appels réseau vers des API gratuites sans SLA garanti, et la parallé-
-lisation s'est révélée moins fiable en test réel (plus de timeouts). Une
-fois dbt_run_node terminé, alert_node et regime_node, eux, tournent en
-parallèle sans risque puisqu'ils ne lisent que DuckDB en local.
+Règle importante :
+- data_node, macro_node, dbt_run_node, alert_node et regime_node sont déterministes.
+- analyst_node est le seul nœud qui appelle le LLM.
+- L'Agent Analyste ne reçoit pas de données brutes : il construit son prompt
+  depuis DuckDB via prompt_builder.py, à partir de marts, alertes et régime macro.
 """
 
 from __future__ import annotations
@@ -30,6 +28,7 @@ from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from app.agents.analyst.analyst_agent import run_analyst_agent
 from app.config.settings import settings
 from app.pipeline.alert_engine import run_alert_engine
 from app.pipeline.data_collector import DataCollector
@@ -45,11 +44,9 @@ class PipelineState(TypedDict, total=False):
     """
     État partagé entre les nœuds du graphe.
 
-    'errors' utilise un reducer (Annotated[..., operator.add]) parce que
-    alert_node et regime_node tournent en PARALLÈLE — sans reducer, si les
-    deux échouaient en même temps, le second écraserait l'erreur du
-    premier au lieu de l'accumuler. Avec operator.add, LangGraph concatène
-    les listes retournées par chaque nœud automatiquement.
+    errors utilise un reducer car alert_node et regime_node tournent
+    en parallèle. Avec operator.add, LangGraph concatène les erreurs
+    au lieu de les écraser.
     """
 
     market_rows: int
@@ -57,6 +54,7 @@ class PipelineState(TypedDict, total=False):
     dbt_success: bool
     alerts: list[Alert]
     macro_regime: MacroRegime | None
+    analyst_report: str | None
     errors: Annotated[list[str], operator.add]
 
 
@@ -65,87 +63,165 @@ class PipelineState(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 
 def data_node(state: PipelineState) -> PipelineState:
-    """Collecte les prix de marché (yfinance) et les écrit en base."""
+    """Collecte les prix de marché avec yfinance et les écrit dans DuckDB."""
     logger.info("[graph] data_node démarré")
+
     try:
         collector = DataCollector()
         df = collector.collect_market_data()
+
         with DuckDBRepository() as repo:
             written = repo.upsert_prices(df)
+
+        logger.info("[graph] data_node terminé | lignes=%s", written)
         return {"market_rows": written}
+
     except Exception as exc:
         logger.exception("[graph] data_node a échoué")
-        return {"market_rows": 0, "errors": [f"data_node: {exc}"]}
+        return {
+            "market_rows": 0,
+            "errors": [f"data_node: {exc}"],
+        }
 
 
 def macro_node(state: PipelineState) -> PipelineState:
-    """Collecte les indicateurs macro (BCE, INSEE/Eurostat) et les écrit en base."""
+    """Collecte les indicateurs macro et les écrit dans DuckDB."""
     logger.info("[graph] macro_node démarré")
+
     try:
         with DuckDBRepository() as repo:
             written = run_macro_collector(repo)
+
+        logger.info("[graph] macro_node terminé | lignes=%s", written)
         return {"macro_rows": written}
+
     except Exception as exc:
         logger.exception("[graph] macro_node a échoué")
-        return {"macro_rows": 0, "errors": [f"macro_node: {exc}"]}
+        return {
+            "macro_rows": 0,
+            "errors": [f"macro_node: {exc}"],
+        }
 
 
 def dbt_run_node(state: PipelineState) -> PipelineState:
     """
-    Lance `dbt run` — recalcule staging + marts à partir des données
-    fraîchement collectées. Ne s'exécute qu'une fois data_node ET
-    macro_node terminés (synchronisation native LangGraph).
+    Lance dbt run.
+
+    Recalcule les vues staging et les tables marts à partir des données
+    fraîchement collectées dans DuckDB.
     """
     logger.info("[graph] dbt_run_node démarré")
+
     dbt_dir = Path(settings.DBT_PROJECT_DIR)
 
-    result = subprocess.run(
-        ["dbt", "run", "--profiles-dir", "."],
-        cwd=dbt_dir,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["dbt", "run", "--profiles-dir", "."],
+            cwd=dbt_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
-    if result.returncode != 0:
-        logger.error("[graph] dbt run a échoué :\n%s", result.stdout + result.stderr)
-        return {"dbt_success": False, "errors": [f"dbt_run_node: {result.stdout[-500:]}"]}
+        if result.returncode != 0:
+            output = result.stdout + result.stderr
+            logger.error("[graph] dbt run a échoué :\n%s", output)
 
-    logger.info("[graph] dbt run terminé avec succès")
-    return {"dbt_success": True}
+            return {
+                "dbt_success": False,
+                "errors": [f"dbt_run_node: {output[-800:]}"],
+            }
+
+        logger.info("[graph] dbt run terminé avec succès")
+        return {"dbt_success": True}
+
+    except Exception as exc:
+        logger.exception("[graph] dbt_run_node a échoué")
+        return {
+            "dbt_success": False,
+            "errors": [f"dbt_run_node: {exc}"],
+        }
 
 
 def alert_node(state: PipelineState) -> PipelineState:
-    """Calcule les risques et persiste les alertes — seulement si dbt a réussi."""
+    """Calcule les risques et persiste les alertes si dbt a réussi."""
     logger.info("[graph] alert_node démarré")
 
     if not state.get("dbt_success"):
-        logger.warning("[graph] alert_node ignoré (dbt run a échoué)")
+        logger.warning("[graph] alert_node ignoré car dbt run a échoué")
         return {"alerts": []}
 
     try:
         with DuckDBRepository() as repo:
             alerts = run_alert_engine(repo)
+
+        logger.info("[graph] alert_node terminé | alertes=%s", len(alerts))
         return {"alerts": alerts}
+
     except Exception as exc:
         logger.exception("[graph] alert_node a échoué")
-        return {"alerts": [], "errors": [f"alert_node: {exc}"]}
+        return {
+            "alerts": [],
+            "errors": [f"alert_node: {exc}"],
+        }
 
 
 def regime_node(state: PipelineState) -> PipelineState:
-    """Calcule le régime macro — seulement si dbt a réussi."""
+    """Calcule le régime macro si dbt a réussi."""
     logger.info("[graph] regime_node démarré")
 
     if not state.get("dbt_success"):
-        logger.warning("[graph] regime_node ignoré (dbt run a échoué)")
+        logger.warning("[graph] regime_node ignoré car dbt run a échoué")
         return {"macro_regime": None}
 
     try:
         with DuckDBRepository() as repo:
             regime = get_current_macro_regime(repo)
+
+        logger.info(
+            "[graph] regime_node terminé | régime=%s",
+            regime.regime if regime else "N/A",
+        )
+
         return {"macro_regime": regime}
+
     except Exception as exc:
         logger.exception("[graph] regime_node a échoué")
-        return {"macro_regime": None, "errors": [f"regime_node: {exc}"]}
+        return {
+            "macro_regime": None,
+            "errors": [f"regime_node: {exc}"],
+        }
+
+
+def analyst_node(state: PipelineState) -> PipelineState:
+    """
+    Génère la synthèse finale via l'Agent Analyste.
+
+    Ce nœud est le seul endroit du graphe où un appel LLM peut être fait.
+    Il s'exécute après alert_node et regime_node.
+    """
+    logger.info("[graph] analyst_node démarré")
+
+    if not state.get("dbt_success"):
+        logger.warning("[graph] analyst_node ignoré car dbt run a échoué")
+        return {"analyst_report": None}
+
+    try:
+        with DuckDBRepository() as repo:
+            report = run_analyst_agent(
+            repo=repo,
+            alerts=state.get("alerts", []),
+            )
+
+        logger.info("[graph] analyst_node terminé")
+        return {"analyst_report": report}
+
+    except Exception as exc:
+        logger.exception("[graph] analyst_node a échoué")
+        return {
+            "analyst_report": None,
+            "errors": [f"analyst_node: {exc}"],
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +229,12 @@ def regime_node(state: PipelineState) -> PipelineState:
 # ---------------------------------------------------------------------------
 
 def build_graph():
-    """Construit et compile le graphe LangGraph (data → macro → dbt → alert/regime en parallèle)."""
+    """
+    Construit et compile le graphe LangGraph.
+
+    Flux :
+        data → macro → dbt → alert/regime → analyst
+    """
     graph = StateGraph(PipelineState)
 
     graph.add_node("data_node", data_node)
@@ -161,25 +242,21 @@ def build_graph():
     graph.add_node("dbt_run_node", dbt_run_node)
     graph.add_node("alert_node", alert_node)
     graph.add_node("regime_node", regime_node)
+    graph.add_node("analyst_node", analyst_node)
 
-    # data_node puis macro_node en SÉQUENTIEL (pas en parallèle) : les deux
-    # font des appels réseau externes vers des API gratuites sans SLA
-    # garanti (yfinance, BCE, INSEE). En parallèle, on a observé en test
-    # réel (23/06/2026, 2 runs) plus de timeouts/échecs de métadonnées
-    # qu'en séquentiel — la contention réseau simultanée semble dégrader
-    # la fiabilité plus qu'elle n'apporte de gain de vitesse significatif
-    # pour un run quotidien. alert_node/regime_node restent en parallèle
-    # ci-dessous : ils ne lisent que DuckDB en local, aucun risque réseau.
+    # Partie séquentielle : appels réseau externes
     graph.add_edge(START, "data_node")
     graph.add_edge("data_node", "macro_node")
     graph.add_edge("macro_node", "dbt_run_node")
 
-    # Fan-out vers les 2 branches finales (parallèle — sûr ici, pas de réseau)
+    # Fan-out après dbt : branches locales en parallèle
     graph.add_edge("dbt_run_node", "alert_node")
     graph.add_edge("dbt_run_node", "regime_node")
 
-    graph.add_edge("alert_node", END)
-    graph.add_edge("regime_node", END)
+    # Fan-in : analyst_node attend les deux branches
+    graph.add_edge(["alert_node", "regime_node"], "analyst_node")
+
+    graph.add_edge("analyst_node", END)
 
     return graph.compile()
 
@@ -192,7 +269,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     app_graph = build_graph()
-    final_state = app_graph.invoke({})
+    final_state = app_graph.invoke({"errors": []})
 
     print("\n=== Résultat du run ===")
     print(f"Lignes marché collectées : {final_state.get('market_rows')}")
@@ -203,7 +280,11 @@ if __name__ == "__main__":
     regime = final_state.get("macro_regime")
     print(f"Régime macro             : {regime.regime if regime else 'N/A'}")
 
+    print("\n=== Synthèse Agent Analyste ===")
+    analyst_report = final_state.get("analyst_report")
+    print(analyst_report or "Aucune synthèse générée.")
+
     if final_state.get("errors"):
-        print(f"\n⚠️  Erreurs rencontrées :")
+        print("\nErreurs rencontrées :")
         for err in final_state["errors"]:
             print(f"  - {err}")

@@ -37,8 +37,13 @@ import time
 from google import genai
 from google.genai import types
 
-from app.agents.analyst.prompt_builder import build_prompt_from_db
+from app.agents.analyst.prompt_builder import (
+    build_analyst_prompt,
+    build_prompt_from_db,
+)
 from app.config.settings import settings
+from app.pipeline.macro_regime import get_current_macro_regime
+from app.pipeline.risk_models import Alert
 from app.storage.duckdb_repository import DuckDBRepository
 
 logger = logging.getLogger(__name__)
@@ -55,7 +60,7 @@ SYSTEM_PROMPT = (
 
 NOT_ADVICE_DISCLAIMER = (
     "Cette synthèse est générée automatiquement à partir de données de "
-    "marché et constitue un conseil en investissement personnalisé."
+    "marché et ne constitue pas un conseil en investissement personnalisé."
 )
 
 
@@ -66,20 +71,7 @@ def generate_synthesis(
     backoff_seconds: float = 5.0,
 ) -> str:
     """
-    Appelle l'API Gemini (generateContent), avec re-essai en cas d'erreur
-    serveur transitoire (ex: 503 "high demand" — observé en test réel le
-    23/06/2026 sur gemini-3.5-flash, modèle tout juste sorti et donc
-    probablement sous forte charge). Le SDK Google retente déjà une fois
-    en interne (tenacity), mais pas toujours assez longtemps pour absorber
-    un pic de charge — cette couche ajoute une pause plus longue.
-
-    Args:
-        prompt          : le message de ce tour (le prompt structuré pour
-                          le premier tour)
-        history         : historique de conversation, voir docstring du
-                          module — None pour un appel simple (cas actuel)
-        retries         : nombre de re-essais après le premier échec
-        backoff_seconds : pause de base entre tentatives (croissante)
+    Appelle l'API Gemini generateContent avec retry simple.
     """
     if not settings.GEMINI_API_KEY:
         raise RuntimeError(
@@ -102,6 +94,7 @@ def generate_synthesis(
                 ),
             )
             return response.text
+
         except Exception as exc:
             last_exc = exc
             logger.warning(
@@ -110,32 +103,70 @@ def generate_synthesis(
                 retries + 1,
                 exc,
             )
+
             if attempt < retries:
                 time.sleep(backoff_seconds * (attempt + 1))
 
     logger.exception("Appel API Gemini échoué après %d tentative(s)", retries + 1)
-    raise RuntimeError(f"Erreur API Gemini après {retries + 1} tentative(s) : {last_exc}") from last_exc
+    raise RuntimeError(
+        f"Erreur API Gemini après {retries + 1} tentative(s) : {last_exc}"
+    ) from last_exc
 
 
-def run_analyst_agent(repo: DuckDBRepository) -> str:
+def run_analyst_agent(
+    repo: DuckDBRepository,
+    alerts: list[Alert] | None = None,
+    mark_alerts_read: bool = True,
+) -> str:
     """
-    Point d'entrée utilisé par l'orchestrateur (LangGraph).
+    Point d'entrée utilisé par l'orchestrateur LangGraph.
 
-    Construit le prompt depuis DuckDB, appelle le LLM, et ajoute le
-    bandeau DEMO_MODE à la PRÉSENTATION (pas dans le prompt envoyé au
-    LLM, qui reste exactement celui spécifié dans la doc de référence).
+    Si `alerts` est fourni par le graphe, l'Agent Analyste utilise
+    directement ces alertes au lieu de relire uniquement les alertes
+    non lues depuis DuckDB.
+
+    Cela garantit que les alertes détectées par alert_node pendant le run
+    sont bien incluses dans le prompt Analyste.
     """
-    prompt, alerts = build_prompt_from_db(repo)
+
+    if alerts is None:
+        # Cas autonome : python -m app.agents.analyst.analyst_agent
+        # On construit le prompt depuis DuckDB avec les alertes non lues.
+        prompt, alerts = build_prompt_from_db(repo)
+
+    else:
+        # Cas orchestré LangGraph :
+        # alert_node a déjà calculé les alertes et les a placées dans le state.
+        # On les réutilise directement pour éviter de les perdre.
+        df_portfolio = repo.execute_query(
+            "SELECT * FROM main_marts.mart_portfolio_value"
+        )
+        regime = get_current_macro_regime(repo)
+
+        prompt = build_analyst_prompt(
+            df_portfolio=df_portfolio,
+            alerts=alerts,
+            regime=regime,
+        )
+
     logger.info(
-        "Prompt construit (%d caractères, %d alerte(s) incluse(s))",  
+        "Prompt construit (%d caractères, %d alerte(s) incluse(s))",
         len(prompt),
-        len(alerts),                                  
+        len(alerts),
     )
 
     synthesis = generate_synthesis(prompt)
 
-    if alerts:                                        
-        alert_ids = [a.alert_id for a in alerts]
+    regime = get_current_macro_regime(repo)
+    repo.insert_synthesis(
+        content=synthesis,
+        alert_count=len(alerts),
+        macro_regime=regime.regime,
+        model=settings.GEMINI_MODEL,
+    )
+    
+    if mark_alerts_read and alerts:
+        alert_ids = [alert.alert_id for alert in alerts]
         repo.mark_alerts_read(alert_ids)
         logger.info("%d alerte(s) marquée(s) comme lue(s)", len(alert_ids))
 

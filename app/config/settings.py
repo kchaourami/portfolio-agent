@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     # API keys (optionnelles pour le MVP)
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL: str = "gemini-3.5-flash"
 
     # Portfolio (portefeuille par défaut pour les tests)
     DEFAULT_TICKERS: list[str] = [
