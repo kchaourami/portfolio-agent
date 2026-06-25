@@ -12,8 +12,12 @@ de l'utilisateur (portfolio) pour calculer :
   - sector        : secteur de l'actif (ajouté pour SECTOR_CONCENTRATION)
   - relative_perf_5d : sous/sur-performance vs CAC 40 (ajouté pour le
                         prompt de l'Agent Analyste — "Comparaison CAC 40")
+  - return_20d, volume_ratio_20d, asset_type : ajoutés pour le Decision
+                        Engine (decision_engine.py) — momentum 20j,
+                        volume anormal, et distinction action/ETF
 
-Consommé par : Agent Analyste, dashboard Streamlit, risk_calculator.py
+Consommé par : Agent Analyste, decision_engine.py, dashboard Streamlit,
+risk_calculator.py
 
 Note : si la table portfolio est vide (pas encore de positions saisies),
 ce modèle retourne un DataFrame vide — comportement attendu.
@@ -28,11 +32,14 @@ latest_prices as (
         date        as price_date,
         close_price as latest_close,
         sector,
+        asset_type,
         daily_return,
         return_5d,
+        return_20d,
         relative_perf_5d,
         vol_20d,
         drawdown,
+        volume_ratio_20d,
         signal_count
 
     from {{ ref('mart_risk_signals') }}
@@ -51,11 +58,14 @@ portfolio_valued as (
         lp.price_date,
         lp.latest_close,
         lp.sector,
+        lp.asset_type,
         lp.daily_return,
         lp.return_5d,
+        lp.return_20d,
         lp.relative_perf_5d,
         lp.vol_20d,
         lp.drawdown,
+        lp.volume_ratio_20d,
         lp.signal_count,
 
         -- Valeur de marché : quantité × prix actuel
