@@ -6,16 +6,25 @@ Emplacement cible : app/orchestration/graph.py
 Orchestrateur LangGraph — enchaîne les pipelines déterministes déjà
 construits :
 
-    data_node ──> macro_node ──> dbt_run_node ──> alert_node  ──┐
-                                                 └─> regime_node ─┴──> analyst_node ──> END
-
-Chaque nœud appelle un pipeline existant.
+    data_node ──> macro_node ──> dbt_run_node ──┬─> alert_node    ──┐
+                                                 ├─> regime_node   ──┼──> analyst_node ──> END
+                                                 └─> decision_node ──┘
 
 Règle importante :
-- data_node, macro_node, dbt_run_node, alert_node et regime_node sont déterministes.
+- data_node, macro_node, dbt_run_node, alert_node, regime_node et
+  decision_node sont déterministes.
 - analyst_node est le seul nœud qui appelle le LLM.
-- L'Agent Analyste ne reçoit pas de données brutes : il construit son prompt
-  depuis DuckDB via prompt_builder.py, à partir de marts, alertes et régime macro.
+- decision_node tourne en parallèle d'alert_node/regime_node — il ne
+  dépend que de dbt_run_node (lit mart_portfolio_value directement, pas
+  la table alerts) et ne fait aucun appel réseau, donc la parallélisation
+  est sûre (même raisonnement que pour alert_node/regime_node).
+
+NOTE — séquencement avec l'étape 6 (à venir) : ce nœud calcule ET
+persiste les décisions (table `decisions`), mais elles ne sont pas
+encore transmises à l'Agent Analyste ici (analyst_node ne passe pas
+encore `decisions` à run_analyst_agent) — c'est l'objet de la prochaine
+étape, qui consiste à modifier analyst_node + run_analyst_agent pour
+relayer state["decisions"] jusqu'au prompt.
 """
 
 from __future__ import annotations
@@ -32,6 +41,8 @@ from app.agents.analyst.analyst_agent import run_analyst_agent
 from app.config.settings import settings
 from app.pipeline.alert_engine import run_alert_engine
 from app.pipeline.data_collector import DataCollector
+from app.pipeline.decision_engine import run_decision_engine
+from app.pipeline.decision_models import TickerDecision
 from app.pipeline.macro_collector import run_macro_collector
 from app.pipeline.macro_regime import MacroRegime, get_current_macro_regime
 from app.pipeline.risk_models import Alert
@@ -44,9 +55,9 @@ class PipelineState(TypedDict, total=False):
     """
     État partagé entre les nœuds du graphe.
 
-    errors utilise un reducer car alert_node et regime_node tournent
-    en parallèle. Avec operator.add, LangGraph concatène les erreurs
-    au lieu de les écraser.
+    errors utilise un reducer car alert_node, regime_node et
+    decision_node tournent en parallèle. Avec operator.add, LangGraph
+    concatène les erreurs au lieu de les écraser.
     """
 
     market_rows: int
@@ -54,6 +65,7 @@ class PipelineState(TypedDict, total=False):
     dbt_success: bool
     alerts: list[Alert]
     macro_regime: MacroRegime | None
+    decisions: list[TickerDecision]
     analyst_report: str | None
     errors: Annotated[list[str], operator.add]
 
@@ -193,12 +205,47 @@ def regime_node(state: PipelineState) -> PipelineState:
         }
 
 
+def decision_node(state: PipelineState) -> PipelineState:
+    """
+    Calcule les décisions structurées par ticker (Decision Engine) et les
+    persiste dans la table `decisions`, si dbt a réussi.
+
+    Tourne en parallèle d'alert_node/regime_node : ne dépend que de
+    dbt_run_node (lit mart_portfolio_value directement, jamais la table
+    alerts), aucun appel réseau — parallélisation sûre, même raisonnement
+    que pour alert_node/regime_node.
+    """
+    logger.info("[graph] decision_node démarré")
+
+    if not state.get("dbt_success"):
+        logger.warning("[graph] decision_node ignoré car dbt run a échoué")
+        return {"decisions": []}
+
+    try:
+        with DuckDBRepository() as repo:
+            decisions = run_decision_engine(repo)
+
+        logger.info("[graph] decision_node terminé | décisions=%s", len(decisions))
+        return {"decisions": decisions}
+
+    except Exception as exc:
+        logger.exception("[graph] decision_node a échoué")
+        return {
+            "decisions": [],
+            "errors": [f"decision_node: {exc}"],
+        }
+
+
 def analyst_node(state: PipelineState) -> PipelineState:
     """
     Génère la synthèse finale via l'Agent Analyste.
 
     Ce nœud est le seul endroit du graphe où un appel LLM peut être fait.
-    Il s'exécute après alert_node et regime_node.
+    Il s'exécute après alert_node, regime_node et decision_node.
+
+    NOTE : decisions n'est pas encore transmis à run_analyst_agent ici —
+    c'est l'objet de la prochaine étape (modifier run_analyst_agent pour
+    accepter et utiliser ce paramètre).
     """
     logger.info("[graph] analyst_node démarré")
 
@@ -209,8 +256,9 @@ def analyst_node(state: PipelineState) -> PipelineState:
     try:
         with DuckDBRepository() as repo:
             report = run_analyst_agent(
-            repo=repo,
-            alerts=state.get("alerts", []),
+                repo=repo,
+                alerts=state.get("alerts", []),
+                decisions=state.get("decisions", []), 
             )
 
         logger.info("[graph] analyst_node terminé")
@@ -233,7 +281,7 @@ def build_graph():
     Construit et compile le graphe LangGraph.
 
     Flux :
-        data → macro → dbt → alert/regime → analyst
+        data → macro → dbt → (alert / regime / decision) → analyst
     """
     graph = StateGraph(PipelineState)
 
@@ -242,6 +290,7 @@ def build_graph():
     graph.add_node("dbt_run_node", dbt_run_node)
     graph.add_node("alert_node", alert_node)
     graph.add_node("regime_node", regime_node)
+    graph.add_node("decision_node", decision_node)
     graph.add_node("analyst_node", analyst_node)
 
     # Partie séquentielle : appels réseau externes
@@ -249,12 +298,13 @@ def build_graph():
     graph.add_edge("data_node", "macro_node")
     graph.add_edge("macro_node", "dbt_run_node")
 
-    # Fan-out après dbt : branches locales en parallèle
+    # Fan-out après dbt : 3 branches locales en parallèle
     graph.add_edge("dbt_run_node", "alert_node")
     graph.add_edge("dbt_run_node", "regime_node")
+    graph.add_edge("dbt_run_node", "decision_node")
 
-    # Fan-in : analyst_node attend les deux branches
-    graph.add_edge(["alert_node", "regime_node"], "analyst_node")
+    # Fan-in : analyst_node attend les 3 branches
+    graph.add_edge(["alert_node", "regime_node", "decision_node"], "analyst_node")
 
     graph.add_edge("analyst_node", END)
 
@@ -276,6 +326,7 @@ if __name__ == "__main__":
     print(f"Lignes macro collectées  : {final_state.get('macro_rows')}")
     print(f"dbt run réussi           : {final_state.get('dbt_success')}")
     print(f"Alertes traitées         : {len(final_state.get('alerts', []))}")
+    print(f"Décisions calculées      : {len(final_state.get('decisions', []))}")
 
     regime = final_state.get("macro_regime")
     print(f"Régime macro             : {regime.regime if regime else 'N/A'}")

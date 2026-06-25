@@ -3,18 +3,26 @@ prompt_builder.py
 ==================
 Emplacement cible : app/agents/analyst/prompt_builder.py
 
-Construit le prompt structuré de l'Agent Analyste — format exact défini
-dans la doc "LLM : Construction des prompts". AUCUNE donnée brute n'est
-jamais transmise au LLM : tout ce qui suit a déjà été calculé de façon
-déterministe par les pipelines (mart_portfolio_value, alerts,
-macro_regime.py). Ce module ne fait aucun appel LLM — uniquement de la
-mise en forme de texte.
+Construit le prompt structuré de l'Agent Analyste. AUCUNE donnée brute
+n'est jamais transmise au LLM : tout ce qui suit a déjà été calculé de
+façon déterministe par les pipelines (mart_portfolio_value, alerts,
+macro_regime.py, decision_engine.py). Ce module ne fait aucun appel
+LLM — uniquement de la mise en forme de texte.
+
+CHANGEMENT IMPORTANT (Decision Engine) : la partie 5 du prompt ne demande
+plus au LLM de GÉNÉRER des recommandations — les décisions
+(BUY_WATCH/HOLD/WATCH/REDUCE/SELL_SIGNAL/INCREASE) sont désormais déjà
+calculées par decision_engine.py (entièrement déterministe) et fournies
+dans le bloc [DÉCISIONS PROPOSÉES]. Le rôle du LLM se limite à les
+EXPLIQUER en langage naturel, jamais à les recalculer ou les contredire.
 """
 
 from __future__ import annotations
 
 import pandas as pd
 
+from app.pipeline.decision_engine import compute_decisions
+from app.pipeline.decision_models import TickerDecision
 from app.pipeline.macro_regime import MacroRegime, get_current_macro_regime
 from app.pipeline.risk_models import Alert
 from app.storage.duckdb_repository import DuckDBRepository
@@ -31,6 +39,9 @@ Drawdown actuel : {drawdown}%
 [SIGNAUX DÉTECTÉS]
 {signals_list}
 
+[DÉCISIONS PROPOSÉES]
+{decisions_list}
+
 [CONTEXTE MACRO]
 Régime : {macro_regime}
 Taux BCE : {ecb_rate}% | Inflation FR : {inflation}% | EUR/USD : {eurusd}
@@ -42,17 +53,28 @@ Produis une analyse en 5 parties :
 2. Signaux à surveiller (bullet points, données uniquement)
 3. Contexte macro et son impact potentiel sur le portefeuille
 4. Niveau de vigilance global : Vert / Orange / Rouge avec justification
-5. Recommandations : 2 à 4 recommandations concrètes et actionnables,
-   directement liées aux signaux et chiffres ci-dessus (ex: réduire
-   l'exposition à un titre ou secteur en alerte, surveiller un
-   indicateur précis, ajuster l'allocation au vu du contexte macro
-   et apres vous me dites il vaut mieux vendre ou acheter, etc.).
-    Chaque recommandation doit être justifiée par un ou plusieurs chiffres précis du contexte ci-dessus —
+5. Explication des décisions : pour chaque décision listée dans
+   [DÉCISIONS PROPOSÉES], explique en 1-2 phrases pourquoi elle a été
+   prise, en t'appuyant uniquement sur les raisons fournies pour ce
+   ticker. Tu peux nuancer la FORMULATION de la recommandation en langage naturel orienté
+   achat/vente (ex: "alléger progressivement la position", "profiter
+   de la dynamique pour renforcer") — mais jamais le SENS de la
+   décision elle-même.
 
 Règles absolues :
 — Ne cite que des données fournies dans ce contexte, jamais d'inventions
 — Reste factuel, concis, professionnel
-— Formule en français"""
+— Formule en français
+— Ne nomme un ticker ou un secteur que s'il apparaît déjà explicitement
+  dans [COMPOSITION] ou [SIGNAUX DÉTECTÉS] — n'invente jamais une
+  caractéristique du portefeuille qui ne figure dans aucun des deux
+— Les décisions (BUY_WATCH / HOLD / WATCH / REDUCE / SELL_SIGNAL /
+  INCREASE) sont déjà calculées dans [DÉCISIONS PROPOSÉES] par un
+  moteur de règles déterministe. Tu peux nuancer leur FORMULATION
+  (intensité, vocabulaire d'achat/vente), mais jamais leur SENS : ne
+  recalcule jamais une décision, ne la contredis jamais, et ne propose
+  jamais une catégorie de décision différente de celle fournie (ex:
+  jamais suggérer un achat pour une décision REDUCE ou SELL_SIGNAL)"""
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +99,6 @@ def _fmt_eur(value: float | None) -> str:
 
 # ---------------------------------------------------------------------------
 # Agrégats portefeuille — moyennes pondérées par le poids de chaque ligne
-# (même principe d'approximation que check_portfolio_drawdown dans
-# risk_calculator.py : pas un vrai NAV historique, mais cohérent et
-# documenté comme tel — cf. limitation déjà actée dans le mémoire)
 # ---------------------------------------------------------------------------
 
 def compute_portfolio_summary(df_portfolio: pd.DataFrame) -> dict:
@@ -115,30 +134,59 @@ def format_signals(alerts: list[Alert]) -> str:
         return "Aucun signal actif."
     return "\n".join(f"- {alert.message}" for alert in alerts)
 
+
 def format_composition(df_portfolio: pd.DataFrame) -> str:
     """
     Liste ticker / secteur / poids pour chaque ligne du portefeuille,
-    triée par poids décroissant.
- 
-    Sert à donner à l'agent la correspondance ticker → secteur dont il a
-    besoin pour relier une alerte SECTOR_CONCENTRATION (qui ne mentionne
-    que le nom du secteur) à un ticker précis dans ses recommandations —
-    sans ce bloc, l'agent n'aurait aucune base pour deviner quel ticker
-    cause la concentration, et risquerait soit de ne pas répondre à la
-    question, soit pire, d'inventer un ticker au hasard.
+    triée par poids décroissant — permet à l'agent de relier une alerte
+    de secteur à un ticker précis sans inventer.
+
+    Distingue explicitement "vrai ETF sans secteur" (asset_type='etf')
+    de "action dont le secteur est temporairement indisponible"
+    (yfinance échoue régulièrement sur la récupération des métadonnées,
+    observé à plusieurs reprises dans ce projet) — les deux cas
+    affichaient à tort "(ETF)" auparavant, ce qui aurait pu laisser
+    croire à l'agent qu'une action comme AIR.PA ou BNP.PA était un ETF.
     """
     if df_portfolio.empty:
         return "Aucune position en portefeuille."
- 
+
     df = df_portfolio.dropna(subset=["weight"]).sort_values("weight", ascending=False)
- 
+
     lines = []
     for _, row in df.iterrows():
-        sector = row["sector"] if pd.notna(row["sector"]) else "Non classé (ETF)"
+        if pd.notna(row.get("sector")):
+            sector_label = row["sector"]
+        elif row.get("asset_type") == "etf":
+            sector_label = "ETF (non sectorisé)"
+        else:
+            sector_label = "secteur non disponible"
+
         weight_pct = row["weight"] * 100
-        lines.append(f"- {row['ticker']} ({sector}) : {weight_pct:.1f}% du portefeuille")
- 
+        lines.append(f"- {row['ticker']} ({sector_label}) : {weight_pct:.1f}% du portefeuille")
+
     return "\n".join(lines)
+
+
+def format_decisions(decisions: list[TickerDecision]) -> str:
+    """
+    Formate les décisions structurées du Decision Engine — code anglais
+    (référence standard) + libellé français + niveau de confiance +
+    raisons. L'agent doit EXPLIQUER ces décisions, jamais en inventer.
+    """
+    if not decisions:
+        return "Aucune décision disponible."
+
+    lines = []
+    for d in decisions:
+        reasons_str = "; ".join(d.reasons)
+        lines.append(
+            f"- {d.ticker} : {d.decision.value} ({d.decision_label_fr}) "
+            f"— confiance {d.confidence_score}/100 — {reasons_str}"
+        )
+
+    return "\n".join(lines)
+
 
 # ---------------------------------------------------------------------------
 # Construction du prompt
@@ -148,9 +196,11 @@ def build_analyst_prompt(
     df_portfolio: pd.DataFrame,
     alerts: list[Alert],
     regime: MacroRegime,
+    decisions: list[TickerDecision] | None = None,
 ) -> str:
-    """Assemble le prompt structuré complet à partir des 3 contextes déjà calculés."""
+    """Assemble le prompt structuré complet à partir des contextes déjà calculés."""
     summary = compute_portfolio_summary(df_portfolio)
+    decisions = decisions or []
 
     return PROMPT_TEMPLATE.format(
         total_value=_fmt_eur(summary["total_value"]),
@@ -159,6 +209,7 @@ def build_analyst_prompt(
         drawdown=_fmt_pct(summary["drawdown"]),
         composition_list=format_composition(df_portfolio),
         signals_list=format_signals(alerts),
+        decisions_list=format_decisions(decisions),
         macro_regime=regime.regime,
         ecb_rate=_fmt_pct_already(regime.ecb_rate),
         inflation=_fmt_pct_already(regime.inflation_fr),
@@ -170,7 +221,9 @@ def build_analyst_prompt(
 def build_prompt_from_db(repo: DuckDBRepository) -> tuple[str, list[Alert]]:
     """
     Point d'entrée pratique : lit tout depuis DuckDB (mart_portfolio_value,
-    alertes non lues, régime macro) et construit le prompt complet.
+    alertes non lues, régime macro) et calcule les décisions à la volée
+    (compute_decisions — pur calcul, ne persiste rien ici ; la
+    persistance a lieu via decision_node dans le graphe orchestré).
     """
     df_portfolio = repo.execute_query("SELECT * FROM main_marts.mart_portfolio_value")
 
@@ -190,7 +243,9 @@ def build_prompt_from_db(repo: DuckDBRepository) -> tuple[str, list[Alert]]:
     ]
 
     regime = get_current_macro_regime(repo)
-    prompt = build_analyst_prompt(df_portfolio, alerts, regime)
+    decisions = compute_decisions(repo)
+
+    prompt = build_analyst_prompt(df_portfolio, alerts, regime, decisions)
     return prompt, alerts
 
 
@@ -200,6 +255,6 @@ def build_prompt_from_db(repo: DuckDBRepository) -> tuple[str, list[Alert]]:
 
 if __name__ == "__main__":
     with DuckDBRepository() as repo:
-        prompt, alerts = build_prompt_from_db(repo) 
+        prompt, alerts = build_prompt_from_db(repo)
         print(prompt)
         print(f"\n--- {len(alerts)} alerte(s) incluse(s) dans ce prompt ---")

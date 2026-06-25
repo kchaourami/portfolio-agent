@@ -34,6 +34,36 @@ STATIC_METADATA: dict[str, Metadata] = {
         "asset_type": "index",
         "sector": None,
     },
+    "BNP.PA": {
+        "isin": "FR0000131104",
+        "company_name": "BNP Paribas",
+        "asset_type": "action",
+        "sector": "Financial Services",
+    },
+    "MC.PA": {
+        "isin": "FR0000121014",
+        "company_name": "LVMH Moët Hennessy Louis Vuitton",
+        "asset_type": "action",
+        "sector": "Consumer Cyclical",
+    },
+    "SAN.PA": {
+        "isin": "FR0000120578",
+        "company_name": "Sanofi",
+        "asset_type": "action",
+        "sector": "Healthcare",
+    },
+    "AIR.PA": {
+        "isin": "NL0000235190",
+        "company_name": "Airbus",
+        "asset_type": "action",
+        "sector": "Industrials",
+    },
+    "OR.PA": {
+        "isin": "FR0000120321",
+        "company_name": "L'Oréal",
+        "asset_type": "action",
+        "sector": "Consumer Defensive",
+    },
 }
 
 

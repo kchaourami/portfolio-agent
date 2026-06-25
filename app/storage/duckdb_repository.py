@@ -105,7 +105,24 @@ CREATE TABLE IF NOT EXISTS syntheses (
 )
 """
 
-ALL_DDL = [DDL_RAW_PRICES, DDL_RAW_MACRO, DDL_PORTFOLIO, DDL_ALERTS, DDL_SYNTHESES]
+DDL_DECISIONS = """
+CREATE TABLE IF NOT EXISTS decisions (
+    decision_id      VARCHAR   NOT NULL,
+    generated_at     TIMESTAMP NOT NULL,
+    ticker           VARCHAR   NOT NULL,
+    decision         VARCHAR   NOT NULL,
+    confidence_score INTEGER,
+    risk_score       INTEGER,
+    momentum_score   INTEGER,
+    macro_score      INTEGER,
+    reasons          VARCHAR,
+    review_condition VARCHAR,
+    inserted_at      TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (decision_id)
+)
+"""
+
+ALL_DDL = [DDL_RAW_PRICES, DDL_RAW_MACRO, DDL_PORTFOLIO, DDL_ALERTS, DDL_SYNTHESES, DDL_DECISIONS]
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +615,84 @@ class DuckDBRepository:
             ORDER BY generated_at DESC
             LIMIT {limit}
         """).df()
+    
+    # ------------------------------------------------------------------
+    # Décisions (Decision Engine)
+    # ------------------------------------------------------------------
+ 
+    def insert_decisions(self, decisions: list, generated_at=None) -> int:
+        """
+        Persiste les décisions d'un run — une ligne par ticker. Toutes
+        les décisions du même run partagent le même generated_at, ce qui
+        permet de les regrouper facilement avec fetch_latest_decisions().
+ 
+        Args:
+            decisions : liste de TickerDecision (decision_models.py)
+            generated_at : timestamp partagé pour tout le run — si None,
+                           pd.Timestamp.now() est utilisé une seule fois
+                           pour tous les tickers du run
+        """
+        self._ensure_connected()
+ 
+        if not decisions:
+            return 0
+ 
+        import uuid
+        timestamp = generated_at or pd.Timestamp.now()
+ 
+        rows = [
+            {
+                "decision_id": str(uuid.uuid4()),
+                "generated_at": timestamp,
+                "ticker": d.ticker,
+                "decision": d.decision.value,
+                "confidence_score": d.confidence_score,
+                "risk_score": d.risk_score,
+                "momentum_score": d.momentum_score,
+                "macro_score": d.macro_score,
+                "reasons": " | ".join(d.reasons),
+                "review_condition": d.review_condition,
+            }
+            for d in decisions
+        ]
+ 
+        df = pd.DataFrame(rows)
+ 
+        self._conn.execute("""
+            INSERT INTO decisions
+                (decision_id, generated_at, ticker, decision, confidence_score,
+                 risk_score, momentum_score, macro_score, reasons, review_condition)
+            SELECT decision_id, generated_at, ticker, decision, confidence_score,
+                   risk_score, momentum_score, macro_score, reasons, review_condition
+            FROM df
+        """)
+ 
+        count = len(rows)
+        logger.info("insert_decisions terminé | lignes=%d", count)
+        return count
+ 
+    def fetch_latest_decisions(self) -> pd.DataFrame:
+        """Retourne toutes les décisions du run le plus récent (même generated_at)."""
+        self._ensure_connected()
+        return self._conn.execute("""
+            SELECT * FROM decisions
+            WHERE generated_at = (SELECT MAX(generated_at) FROM decisions)
+            ORDER BY ticker
+        """).df()
+ 
+    def fetch_decisions_history(self, ticker: str | None = None, limit: int = 50) -> pd.DataFrame:
+        """Retourne l'historique des décisions, optionnellement filtré par ticker."""
+        self._ensure_connected()
+        if ticker:
+            return self._conn.execute(
+                "SELECT * FROM decisions WHERE ticker = $ticker "
+                "ORDER BY generated_at DESC LIMIT $limit",
+                {"ticker": ticker, "limit": limit},
+            ).df()
+        return self._conn.execute(
+            "SELECT * FROM decisions ORDER BY generated_at DESC LIMIT $limit",
+            {"limit": limit},
+        ).df()
     
     # ------------------------------------------------------------------
     # Utilitaires

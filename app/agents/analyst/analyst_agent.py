@@ -45,6 +45,7 @@ from app.config.settings import settings
 from app.pipeline.macro_regime import get_current_macro_regime
 from app.pipeline.risk_models import Alert
 from app.storage.duckdb_repository import DuckDBRepository
+from app.pipeline.decision_models import TickerDecision
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ def generate_synthesis(
 def run_analyst_agent(
     repo: DuckDBRepository,
     alerts: list[Alert] | None = None,
+    decisions: list[TickerDecision] | None = None,   
     mark_alerts_read: bool = True,
 ) -> str:
     """
@@ -130,14 +132,9 @@ def run_analyst_agent(
     """
 
     if alerts is None:
-        # Cas autonome : python -m app.agents.analyst.analyst_agent
-        # On construit le prompt depuis DuckDB avec les alertes non lues.
         prompt, alerts = build_prompt_from_db(repo)
 
     else:
-        # Cas orchestré LangGraph :
-        # alert_node a déjà calculé les alertes et les a placées dans le state.
-        # On les réutilise directement pour éviter de les perdre.
         df_portfolio = repo.execute_query(
             "SELECT * FROM main_marts.mart_portfolio_value"
         )
@@ -147,6 +144,7 @@ def run_analyst_agent(
             df_portfolio=df_portfolio,
             alerts=alerts,
             regime=regime,
+            decisions=decisions, 
         )
 
     logger.info(
@@ -164,7 +162,7 @@ def run_analyst_agent(
         macro_regime=regime.regime,
         model=settings.GEMINI_MODEL,
     )
-    
+
     if mark_alerts_read and alerts:
         alert_ids = [alert.alert_id for alert in alerts]
         repo.mark_alerts_read(alert_ids)
