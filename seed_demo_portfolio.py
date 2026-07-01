@@ -1,26 +1,9 @@
 """
-seed_demo_portfolio.py
-========================
-Script ponctuel — à placer à la racine du projet, à côté de
-seed_test_portfolio.py et preflight_check.py.
-
-Insère un portefeuille DÉMO réaliste et diversifié — destiné aux
-démonstrations, captures d'écran, et au mémoire. Contrairement à
-seed_test_portfolio.py (qui force volontairement une concentration
-excessive sur BNP.PA pour valider SECTOR_CONCENTRATION), ce portefeuille
+Role : 
+Insère un portefeuille DÉMO réaliste et diversifié — ce portefeuille
 représente une allocation crédible de type PEA particulier : un cœur en
 ETF monde, des satellites sectoriels équilibrés, aucune ligne dominante.
 
-Les alertes qui apparaîtront avec ce portefeuille seront de vrais signaux
-de marché (PRICE_DROP, UNDERPERFORMANCE...), pas des artefacts de test —
-plus convaincant pour une démonstration.
-
- Quantités calculées à partir de prix approximatifs (pas les cours exacts
-du jour) — c'est un portefeuille FICTIF, la précision des montants n'a pas
-besoin d'être exacte. Ajustez si besoin après avoir vérifié les vrais cours
-via data_collector.py.
-
-Usage : python seed_demo_portfolio.py
 """
 
 from datetime import date
@@ -29,8 +12,8 @@ import pandas as pd
 
 from app.storage.duckdb_repository import DuckDBRepository
 
-# Allocation cible (~25 000€, profil cœur-satellites diversifié) :
-#   CW8.PA   (ETF monde)        ~40% — cœur du portefeuille
+# Allocation cible (~25 000 euros, profil diversifié) :
+#   CW8.PA   (ETF monde)        ~40% — coeur du portefeuille
 #   PAEEM.PA (ETF émergents)    ~10% — diversification géographique
 #   MC.PA    (LVMH, luxe)       ~13%
 #   SAN.PA   (Sanofi, santé)    ~12%
@@ -54,9 +37,9 @@ DEMO_POSITIONS = pd.DataFrame(
 if __name__ == "__main__":
     with DuckDBRepository() as repo:
         written = repo.upsert_portfolio(DEMO_POSITIONS)
-        print(f"✓ {written} position(s) démo insérée(s) dans 'portfolio'\n")
+        print(f" {written} position inséré dans 'portfolio'\n")
         print(repo.fetch_portfolio())
         print(
-            "\n*  Rappel : ceci est un portefeuille FICTIF de démonstration, "
+            "\n*  Rappel : ceci est un portefeuille fictif "
             "pas une vraie position d'investissement."
         )

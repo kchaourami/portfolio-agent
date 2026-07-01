@@ -1,6 +1,4 @@
 /*
-mart_portfolio_value
-====================
 Table de valorisation du portefeuille.
 
 Joint les prix de marché (mart_risk_signals) avec les positions

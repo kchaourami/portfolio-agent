@@ -1,7 +1,7 @@
 /*
 Test custom : vérifie que les indicateurs calculés sont dans des plages réalistes.
 
-Convention dbt : ce test DOIT retourner 0 ligne pour passer.
+Convention dbt : ce test doit retourner 0 ligne pour passer.
 S'il retourne des lignes, ce sont des anomalies à investiguer.
 
 Seuils choisis :

@@ -1,6 +1,4 @@
 /*
-stg_benchmark
-=============
 Vue de staging isolant uniquement le benchmark (^FCHI — CAC 40).
 
 Rôle :

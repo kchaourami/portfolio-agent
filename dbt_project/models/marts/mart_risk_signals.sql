@@ -1,6 +1,4 @@
 /*
-mart_risk_signals
-=================
 Table principale consommée par l'Agent Risk.
 
 Calcule pour chaque (ticker, date) :
@@ -19,16 +17,11 @@ Seuils d'alerte (commentés pour référence — appliqués dans risk_calculator
   relative_perf_5d < -0.03 → sous-performance vs benchmark
 
 Source   : stg_prices (JOIN) stg_benchmark
-Matérialisation : table (recalculée à chaque dbt run)
 */
 
 with
 
--- -----------------------------------------------------------------------
 -- 1. Base : daily_return recalculé proprement par ticker
---    (on ne fait pas confiance au daily_return de raw_prices
---     car il peut être null sur le premier point de chaque batch)
--- -----------------------------------------------------------------------
 prices_with_return as (
     select
         date,
@@ -53,9 +46,7 @@ prices_with_return as (
     from {{ ref('stg_prices') }}
 ),
 
--- -----------------------------------------------------------------------
--- 2. Indicateurs glissants calculés par ticker
--- -----------------------------------------------------------------------
+--2. Indicateurs glissants calculés par ticker
 indicators as (
     select
         date,
@@ -116,20 +107,15 @@ indicators as (
     from prices_with_return
 ),
 
--- -----------------------------------------------------------------------
 -- 3. Drawdown et volume ratio — calculés depuis indicators
--- -----------------------------------------------------------------------
 with_drawdown as (
     select
         *,
 
         -- Drawdown : recul par rapport au plus haut 252j
-        -- Ex: -0.08 signifie -8% depuis le pic
         close_price / nullif(rolling_high_252d, 0) - 1     as drawdown,
 
-        -- Volume ratio : combien de fois le volume du jour
-        -- est supérieur à la moyenne 20j
-        -- Ex: 2.3 = volume 2.3x supérieur à la normale
+        -- Volume ratio : combien de fois le volume du jour est supérieur à la moyenne 20j
         case
             when avg_volume_20d > 0
             then volume / avg_volume_20d
@@ -139,9 +125,7 @@ with_drawdown as (
     from indicators
 ),
 
--- -----------------------------------------------------------------------
 -- 4. Join avec le benchmark pour la performance relative
--- -----------------------------------------------------------------------
 final as (
     select
         p.date,
@@ -166,14 +150,12 @@ final as (
         round(p.volume_ratio_20d, 4)                        as volume_ratio_20d,
 
         -- Performance relative vs benchmark (5 jours)
-        -- Ex: -0.025 = sous-performance de 2.5% vs CAC 40
         round(
             p.return_5d - b.benchmark_return_5d,
             6
         )                                                   as relative_perf_5d,
 
         -- Score de signal brut : nombre d'indicateurs en zone d'alerte
-        -- Utilisé par l'Agent Risk pour prioriser les alertes
         (
             case when p.drawdown       < -0.05   then 1 else 0 end
           + case when p.vol_20d        > 0.02    then 1 else 0 end
