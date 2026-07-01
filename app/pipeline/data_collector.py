@@ -68,7 +68,7 @@ STATIC_METADATA: dict[str, Metadata] = {
 
 
 class DataCollector:
-    """Pipeline de collecte et normalisation des données de marché."""
+    #Pipeline de collecte et normalisation des données de marché.
 
     def __init__(self, provider: MarketDataProvider | None = None) -> None:
         self.provider = provider or YahooFinanceProvider()
@@ -80,7 +80,6 @@ class DataCollector:
         end: date | None = None,
         include_benchmark: bool = True,
     ) -> pd.DataFrame:
-        """Collecte les prix et retourne le schéma commun du projet."""
         selected_tickers = self._build_ticker_list(
             tickers=tickers,
             include_benchmark=include_benchmark,
@@ -117,7 +116,7 @@ class DataCollector:
         tickers: list[str] | None = None,
         include_benchmark: bool = True,
     ) -> pd.DataFrame:
-        """Collecte le dernier prix disponible et normalise la sortie."""
+        #Collecte le dernier prix disponible et normalise la sortie.
         selected_tickers = self._build_ticker_list(
             tickers=tickers,
             include_benchmark=include_benchmark,
@@ -131,9 +130,6 @@ class DataCollector:
 
         market_data = self._normalize_prices(raw_latest)
         market_data = self._enrich_with_metadata(market_data)
-
-        # Intentionnel : sur une seule ligne par ticker, on ne peut pas calculer
-        # un rendement journalier fiable sans le prix de clôture précédent.
         market_data["daily_return"] = pd.NA
 
         return market_data[
@@ -152,7 +148,7 @@ class DataCollector:
         ]
 
     def _normalize_prices(self, raw_prices: pd.DataFrame) -> pd.DataFrame:
-        """Convertit les prix bruts vers le schéma commun minimal."""
+        #Convertit les prix bruts vers le schéma commun minimal.
         expected_columns = {"date", "ticker", "close", "volume", "source"}
         missing_columns = expected_columns - set(raw_prices.columns)
 
@@ -202,7 +198,7 @@ class DataCollector:
         ].sort_values(["ticker", "date"]).reset_index(drop=True)
 
     def _enrich_with_metadata(self, market_data: pd.DataFrame) -> pd.DataFrame:
-        """Ajoute ISIN, nom société, type actif et secteur."""
+        #Ajoute ISIN, nom société, type actif et secteur.
         df = market_data.copy()
         tickers = sorted(df["ticker"].unique())
 
@@ -258,7 +254,7 @@ class DataCollector:
         ]
 
     def _compute_daily_returns(self, market_data: pd.DataFrame) -> pd.DataFrame:
-        """Calcule le rendement journalier par ticker."""
+        #Calcule le rendement journalier par ticker.
         df = market_data.copy()
         df = df.sort_values(["ticker", "date"])
 
@@ -289,7 +285,7 @@ class DataCollector:
         ].reset_index(drop=True)
 
     def _fetch_metadata_parallel(self, tickers: list[str]) -> dict[str, Metadata]:
-        """Récupère les métadonnées en parallèle pour limiter la latence."""
+        #Récupère les métadonnées en parallèle pour limiter la latence.
         metadata_by_ticker: dict[str, Metadata] = {}
 
         with ThreadPoolExecutor(max_workers=5) as executor:
@@ -315,7 +311,7 @@ class DataCollector:
 
     @staticmethod
     def _fetch_ticker_metadata(ticker: str) -> Metadata:
-        """Récupère des métadonnées simples depuis le fallback statique ou yfinance."""
+        #Récupère des métadonnées simples depuis le fallback statique ou yfinance.
         if ticker in STATIC_METADATA:
             return STATIC_METADATA[ticker]
 
@@ -351,7 +347,7 @@ class DataCollector:
 
     @staticmethod
     def _fallback_metadata(ticker: str) -> Metadata:
-        """Retourne des métadonnées minimales si yfinance échoue."""
+        #Retourne des métadonnées minimales si yfinance échoue.
         if ticker.startswith("^"):
             asset_type = "index"
         elif ticker.upper().endswith(".PA") and ticker.upper() in {"CW8.PA", "PAEEM.PA"}:
@@ -371,7 +367,6 @@ class DataCollector:
         tickers: list[str] | None,
         include_benchmark: bool,
     ) -> list[str]:
-        """Construit la liste de tickers sans doublons."""
         selected_tickers = list(tickers) if tickers else settings.DEFAULT_TICKERS.copy()
 
         if include_benchmark:
@@ -381,7 +376,7 @@ class DataCollector:
 
     @staticmethod
     def _empty_market_frame() -> pd.DataFrame:
-        """Retourne un DataFrame vide au schéma commun."""
+        #Retourne un DataFrame vide au schéma commun.
         return pd.DataFrame(
             columns=[
                 "date",

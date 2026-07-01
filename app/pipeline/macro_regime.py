@@ -1,22 +1,17 @@
 """
-macro_regime.py
-================
-Emplacement cible dans le repo : app/pipeline/macro_regime.py
-
-Agent Macro — classification déterministe du régime macroéconomique.
-
 Rôle :
 - Lire le contexte macro courant (stg_macro : ecb_rate, eurusd, inflation_fr
   et leurs dates respectives)
 - Calculer un taux réel approximatif (ecb_rate - inflation_fr) et en déduire
   un régime classé (restrictif / neutre / accommodant)
-- Produire les "drivers" : phrases factuelles courtes, dérivées uniquement
-  des valeurs réelles — jamais de texte interprétatif inventé
 
-Ce module ne fait AUCUN appel LLM — c'est une classification par seuils,
-documentée et reproductible. Le label produit ici devient une DONNÉE
-D'ENTRÉE du prompt de l'Agent Analyste (cf. doc LLM : Construction des
-prompts), jamais une donnée que le LLM devine ou invente lui-même.
+On utilise le "taux réel" (taux nominal BCE - inflation), un concept
+macroéconomique standard pour juger si la politique monétaire est
+restrictive ou accommodante par rapport à l'inflation courante :
+  taux réel > +1 point  → RESTRICTIF   (la politique freine l'économie)
+  taux réel < -1 point  → ACCOMMODANT  (la politique stimule l'économie)
+  sinon                 → NEUTRE
+Limite méthodologique connue : c'est une approximation simplifiée
 """
 
 from __future__ import annotations
@@ -28,23 +23,6 @@ from pydantic import BaseModel
 
 from app.storage.duckdb_repository import DuckDBRepository
 
-
-# ---------------------------------------------------------------------------
-# Seuils de classification — méthodologie à documenter dans le mémoire
-# ---------------------------------------------------------------------------
-# On utilise le "taux réel" (taux nominal BCE - inflation), un concept
-# macroéconomique standard pour juger si la politique monétaire est
-# restrictive ou accommodante par rapport à l'inflation courante :
-#
-#   taux réel > +1 point  → RESTRICTIF   (la politique freine l'économie)
-#   taux réel < -1 point  → ACCOMMODANT  (la politique stimule l'économie)
-#   sinon                 → NEUTRE
-#
-# Limite méthodologique connue : c'est une approximation simplifiée pour le
-# MVP. Une vraie analyse de régime monétaire intègre aussi les anticipations
-# d'inflation, le forward guidance de la BCE et la politique de bilan —
-# hors scope ici, à mentionner comme piste d'amélioration V2.
-
 REAL_RATE_RESTRICTIVE_THRESHOLD = 1.0
 REAL_RATE_ACCOMMODATIVE_THRESHOLD = -1.0
 
@@ -55,27 +33,23 @@ class MacroRegime(BaseModel):
     [CONTEXTE MACRO] du prompt de l'Agent Analyste.
     """
 
-    regime: str                          # "restrictif" | "neutre" | "accommodant" | "indéterminé"
+    regime: str                           
     ecb_rate: float | None
     ecb_rate_date: date | None
     eurusd: float | None
     eurusd_date: date | None
     inflation_fr: float | None
     inflation_fr_date: date | None
-    real_rate: float | None              # ecb_rate - inflation_fr, None si données manquantes
-    drivers: list[str]                   # phrases factuelles courtes
+    real_rate: float | None             
+    drivers: list[str]                   
 
 
-# ---------------------------------------------------------------------------
 # Classification
-# ---------------------------------------------------------------------------
 
 def classify_regime(real_rate: float | None) -> str:
-    """
-    Classifie le régime à partir du taux réel.
-    Retourne 'indéterminé' si le taux réel n'a pas pu être calculé
-    (données manquantes) — jamais une supposition.
-    """
+
+    #Classifie le régime à partir du taux réel.
+
     if real_rate is None:
         return "indéterminé"
     if real_rate > REAL_RATE_RESTRICTIVE_THRESHOLD:
@@ -86,11 +60,9 @@ def classify_regime(real_rate: float | None) -> str:
 
 
 def _fmt_date(d) -> str:
-    """
-    Formate une date en YYYY-MM-DD, qu'elle arrive en datetime.date ou en
-    pandas.Timestamp (ce dernier affiche "00:00:00" si on le caste juste
-    en str, d'où ce helper).
-    """
+    
+    #Formate une date en YYYY-MM-DD
+
     if d is None:
         return "date inconnue"
     return str(d)[:10]
@@ -105,11 +77,9 @@ def _build_drivers(
     inflation_fr_date,
     real_rate: float | None,
 ) -> list[str]:
-    """
-    Construit des phrases factuelles courtes à partir des seules valeurs
-    réellement disponibles — chaque phrase ne fait que reformuler un
-    chiffre déjà présent dans raw_macro, rien n'est inventé.
-    """
+    
+    #Construit des phrases factuelles courtes à partir des valeurs disponibles
+
     drivers: list[str] = []
 
     if ecb_rate is not None and inflation_fr is not None and real_rate is not None:
@@ -133,20 +103,17 @@ def _build_drivers(
     return drivers
 
 
-# ---------------------------------------------------------------------------
 # Orchestration
-# ---------------------------------------------------------------------------
 
 def _safe(value):
-    """Convertit NaN/NaT (pandas) en None — sinon retourne la valeur telle quelle."""
+    #Convertit NaN/NaT (pandas) en None — sinon retourne la valeur telle quelle.
     return None if pd.isna(value) else value
 
 
 def get_current_macro_regime(repo: DuckDBRepository) -> MacroRegime:
-    """
-    Point d'entrée utilisé par l'orchestrateur (LangGraph) et par le futur
-    constructeur de prompt de l'Agent Analyste.
-    """
+
+    #Point d'entrée utilisé par l'orchestrateur (LangGraph) et par le constructeur de prompt de l'Agent Analyste.
+
     df = repo.execute_query("SELECT * FROM main_staging.stg_macro")
 
     if df.empty:
@@ -189,10 +156,6 @@ def get_current_macro_regime(repo: DuckDBRepository) -> MacroRegime:
         drivers=drivers,
     )
 
-
-# ---------------------------------------------------------------------------
-# Test rapide — python -m app.pipeline.macro_regime
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     with DuckDBRepository() as repo:

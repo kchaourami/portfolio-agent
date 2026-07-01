@@ -1,11 +1,4 @@
 """
-risk_calculator.py
-===================
-Emplacement cible dans le repo : app/pipeline/risk_calculator.py
-
-Agent Risk — partie CALCUL uniquement (pas de persistance ici).
-
-Rôle :
 - Lire les derniers indicateurs depuis mart_risk_signals et mart_portfolio_value
 - Comparer chaque indicateur aux seuils configurés (settings.py)
 - Retourner une liste de RiskBreach (dépassements détectés)
@@ -31,61 +24,44 @@ from app.storage.duckdb_repository import DuckDBRepository
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Noms qualifiés des tables dbt
-# ---------------------------------------------------------------------------
-# IMPORTANT : avec dbt-duckdb, le schéma effectif d'un modèle avec
-# `+schema: marts` dans dbt_project.yml n'est PAS forcément "marts" tout
-# court — le macro générique de dbt concatène généralement
-# "<schéma par défaut>_<schéma custom>" (ex: "main_marts").
-# Vérifiez le nom réel avec :
-#   repo.execute_query(
-#       "SELECT table_schema, table_name FROM information_schema.tables "
-#       "WHERE table_name LIKE 'mart_%'"
-#   )
-# et ajustez les deux constantes ci-dessous si besoin.
-
 MART_RISK_SIGNALS = "main_marts.mart_risk_signals"
 MART_PORTFOLIO_VALUE = "main_marts.mart_portfolio_value"
 
 
-# ---------------------------------------------------------------------------
 # Sévérité
-# ---------------------------------------------------------------------------
 
 def _severity_below(value: float, threshold: float) -> Severity:
-    """
-    Sévérité pour les seuils 'plage basse' (drop, drawdown, sous-performance) :
-    la valeur dépasse le seuil quand elle est INFÉRIEURE à celui-ci
-    (les deux sont négatifs). Critique si la valeur dépasse 1.5x le seuil
-    en intensité.
-    """
+
+    #Sévérité pour les seuils 'plage basse' (drop, drawdown, sous-performance) :
+    #la valeur dépasse le seuil quand elle est INFÉRIEURE à celui-ci
+    #(les deux sont négatifs). Critique si la valeur dépasse 1.5x le seuil
+    #en intensité.
+
     if value <= threshold * 1.5:
         return Severity.CRITICAL
     return Severity.WARNING
 
 
 def _severity_above(value: float, threshold: float) -> Severity:
-    """
-    Sévérité pour les seuils 'plage haute' (volume, volatilité, concentration) :
-    la valeur dépasse le seuil quand elle est SUPÉRIEURE à celui-ci.
-    Critique si la valeur dépasse 1.5x le seuil.
-    """
+
+    #Sévérité pour les seuils 'plage haute' (volume, volatilité, concentration) :
+    #la valeur dépasse le seuil quand elle est SUPÉRIEURE à celui-ci.
+    #Critique si la valeur dépasse 1.5x le seuil.
+
     if value >= threshold * 1.5:
         return Severity.CRITICAL
     return Severity.WARNING
 
 
-# ---------------------------------------------------------------------------
 # Checks — niveau ticker
-# ---------------------------------------------------------------------------
 
 def check_price_drop(
     df_latest: pd.DataFrame,
     threshold: float = settings.ALERT_PRICE_DROP_PCT,
 ) -> list[RiskBreach]:
-    """PRICE_DROP : daily_return < seuil (défaut -3%)."""
+    
+    #PRICE_DROP : daily_return < seuil (défaut -3%).
+
     breaches: list[RiskBreach] = []
 
     for row in df_latest.itertuples():
@@ -110,7 +86,9 @@ def check_abnormal_volume(
     df_latest: pd.DataFrame,
     threshold: float = settings.ALERT_VOLUME_RATIO,
 ) -> list[RiskBreach]:
-    """ABNORMAL_VOLUME : volume_ratio_20d > seuil (défaut 2.0x)."""
+    
+    #ABNORMAL_VOLUME : volume_ratio_20d > seuil (défaut 2.0x).
+
     breaches: list[RiskBreach] = []
 
     for row in df_latest.itertuples():
@@ -135,7 +113,9 @@ def check_underperformance(
     df_latest: pd.DataFrame,
     threshold: float = settings.ALERT_UNDERPERF_PCT,
 ) -> list[RiskBreach]:
-    """UNDERPERFORMANCE : relative_perf_5d < seuil vs CAC 40 (défaut -3%)."""
+    
+    #UNDERPERFORMANCE : relative_perf_5d < seuil vs CAC 40 (défaut -3%).
+
     breaches: list[RiskBreach] = []
 
     for row in df_latest.itertuples():
@@ -160,15 +140,9 @@ def check_high_volatility(
     df_latest: pd.DataFrame,
     threshold: float = settings.ALERT_VOLATILITY_PCT,
 ) -> list[RiskBreach]:
-    """
-    HIGH_VOLATILITY : vol_20d > seuil.
+    
+    #HIGH_VOLATILITY : vol_20d > seuil.
 
-    Note méthodologique : la doc Alertes prévoit un seuil dynamique
-    (percentile 90 historique). Pour le MVP on utilise un seuil absolu
-    fixe (ALERT_VOLATILITY_PCT, défaut 0.02) — cohérent avec le commentaire
-    déjà présent dans mart_risk_signals.sql. Le seuil dynamique par
-    percentile est une amélioration à documenter pour la V2.
-    """
     breaches: list[RiskBreach] = []
 
     for row in df_latest.itertuples():
@@ -189,26 +163,15 @@ def check_high_volatility(
     return breaches
 
 
-# ---------------------------------------------------------------------------
 # Checks — niveau portefeuille
-# ---------------------------------------------------------------------------
 
 def check_portfolio_drawdown(
     df_portfolio: pd.DataFrame,
     threshold: float = settings.ALERT_DRAWDOWN_PCT,
 ) -> RiskBreach | None:
-    """
-    PORTFOLIO_DRAWDOWN : drawdown du portefeuille global < seuil (défaut -5%).
 
-    Limitation connue (à documenter dans le mémoire) : ceci est une
-    APPROXIMATION — moyenne des drawdowns par ligne pondérée par le poids
-    (weight) de chaque ligne. Ce n'est pas le drawdown réel du portefeuille,
-    qui nécessiterait un historique de la valeur totale du portefeuille
-    jour par jour pour calculer son propre plus haut glissant (rolling
-    high) sur 252 jours, comme fait pour chaque ticker dans
-    mart_risk_signals.sql. Amélioration V2 : construire un NAV synthétique
-    du portefeuille et lui appliquer la même logique.
-    """
+    #PORTFOLIO_DRAWDOWN : drawdown du portefeuille global < seuil (défaut -5%).
+
     if df_portfolio.empty:
         logger.warning("check_portfolio_drawdown: portefeuille vide, aucun calcul")
         return None
@@ -236,14 +199,9 @@ def check_sector_concentration(
     df_portfolio: pd.DataFrame,
     threshold: float = settings.ALERT_SECTOR_CONCENTRATION_PCT,
 ) -> list[RiskBreach]:
-    """
-    SECTOR_CONCENTRATION : poids d'un secteur > seuil (défaut 30%).
 
-    Nécessite une colonne 'sector' dans df_portfolio. mart_portfolio_value
-    ne l'expose pas encore aujourd'hui (à ajouter via jointure avec
-    mart_risk_signals/stg_prices). Retourne [] si la colonne est absente
-    plutôt que de lever une exception, pour ne pas bloquer le pipeline.
-    """
+    #SECTOR_CONCENTRATION : poids d'un secteur > seuil (défaut 30%).
+
     if "sector" not in df_portfolio.columns:
         logger.warning(
             "check_sector_concentration: colonne 'sector' absente de "
@@ -281,12 +239,12 @@ def check_sector_concentration(
     return breaches
 
 
-# ---------------------------------------------------------------------------
 # Orchestration interne
-# ---------------------------------------------------------------------------
 
 def _latest_per_ticker(df: pd.DataFrame) -> pd.DataFrame:
-    """Garde uniquement la dernière date disponible pour chaque ticker."""
+
+    #Garde uniquement la dernière date disponible pour chaque ticker.
+
     if df.empty:
         return df
     return (
@@ -301,16 +259,16 @@ def evaluate_all(
     df_risk_signals: pd.DataFrame,
     df_portfolio: pd.DataFrame,
 ) -> list[RiskBreach]:
+    
     """
     Exécute tous les checks et retourne la liste consolidée des breaches.
-
     Args:
         df_risk_signals : contenu de mart_risk_signals (historique complet)
         df_portfolio    : contenu de mart_portfolio_value (positions valorisées)
-
     Returns:
         Liste de RiskBreach, vide si aucun dépassement détecté.
     """
+
     df_latest = _latest_per_ticker(df_risk_signals)
 
     breaches: list[RiskBreach] = []
@@ -339,11 +297,6 @@ def run_risk_calculator(repo: DuckDBRepository) -> list[RiskBreach]:
     df_portfolio = repo.execute_query(f"SELECT * FROM {MART_PORTFOLIO_VALUE}")
 
     return evaluate_all(df_risk_signals, df_portfolio)
-
-
-# ---------------------------------------------------------------------------
-# Test rapide — python -m app.pipeline.risk_calculator
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

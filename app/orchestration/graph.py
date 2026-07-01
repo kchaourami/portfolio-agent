@@ -1,30 +1,10 @@
 """
-graph.py
-=========
-Emplacement cible : app/orchestration/graph.py
+Orchestrateur LangGraph — enchaîne les pipelines déjà construits :
+                                                    
+                                                    > regime_node
+data_node > macro_node > dbt_run_node > alert_node                  > analyst_node > END                
+                                                   > decision_node 
 
-Orchestrateur LangGraph — enchaîne les pipelines déterministes déjà
-construits :
-
-    data_node ──> macro_node ──> dbt_run_node ──┬─> alert_node    ──┐
-                                                 ├─> regime_node   ──┼──> analyst_node ──> END
-                                                 └─> decision_node ──┘
-
-Règle importante :
-- data_node, macro_node, dbt_run_node, alert_node, regime_node et
-  decision_node sont déterministes.
-- analyst_node est le seul nœud qui appelle le LLM.
-- decision_node tourne en parallèle d'alert_node/regime_node — il ne
-  dépend que de dbt_run_node (lit mart_portfolio_value directement, pas
-  la table alerts) et ne fait aucun appel réseau, donc la parallélisation
-  est sûre (même raisonnement que pour alert_node/regime_node).
-
-NOTE — séquencement avec l'étape 6 (à venir) : ce nœud calcule ET
-persiste les décisions (table `decisions`), mais elles ne sont pas
-encore transmises à l'Agent Analyste ici (analyst_node ne passe pas
-encore `decisions` à run_analyst_agent) — c'est l'objet de la prochaine
-étape, qui consiste à modifier analyst_node + run_analyst_agent pour
-relayer state["decisions"] jusqu'au prompt.
 """
 
 from __future__ import annotations
@@ -52,13 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class PipelineState(TypedDict, total=False):
-    """
-    État partagé entre les nœuds du graphe.
-
-    errors utilise un reducer car alert_node, regime_node et
-    decision_node tournent en parallèle. Avec operator.add, LangGraph
-    concatène les erreurs au lieu de les écraser.
-    """
+    #État partagé entre les nœuds du graphe.
 
     market_rows: int
     macro_rows: int
@@ -69,13 +43,9 @@ class PipelineState(TypedDict, total=False):
     analyst_report: str | None
     errors: Annotated[list[str], operator.add]
 
-
-# ---------------------------------------------------------------------------
 # Nœuds
-# ---------------------------------------------------------------------------
-
 def data_node(state: PipelineState) -> PipelineState:
-    """Collecte les prix de marché avec yfinance et les écrit dans DuckDB."""
+    #Collecte les prix de marché avec yfinance et les écrit dans DuckDB.
     logger.info("[graph] data_node démarré")
 
     try:
@@ -97,7 +67,7 @@ def data_node(state: PipelineState) -> PipelineState:
 
 
 def macro_node(state: PipelineState) -> PipelineState:
-    """Collecte les indicateurs macro et les écrit dans DuckDB."""
+    #Collecte les indicateurs macro et les écrit dans DuckDB.
     logger.info("[graph] macro_node démarré")
 
     try:
@@ -116,12 +86,8 @@ def macro_node(state: PipelineState) -> PipelineState:
 
 
 def dbt_run_node(state: PipelineState) -> PipelineState:
-    """
-    Lance dbt run.
+    #Lance dbt run: Recalcule les vues staging et les tables marts à partir des données fraîchement collectées dans DuckDB.
 
-    Recalcule les vues staging et les tables marts à partir des données
-    fraîchement collectées dans DuckDB.
-    """
     logger.info("[graph] dbt_run_node démarré")
 
     dbt_dir = Path(settings.DBT_PROJECT_DIR)
@@ -156,7 +122,7 @@ def dbt_run_node(state: PipelineState) -> PipelineState:
 
 
 def alert_node(state: PipelineState) -> PipelineState:
-    """Calcule les risques et persiste les alertes si dbt a réussi."""
+    #Calcule les risques et persiste les alertes si dbt a réussi.
     logger.info("[graph] alert_node démarré")
 
     if not state.get("dbt_success"):
@@ -179,7 +145,7 @@ def alert_node(state: PipelineState) -> PipelineState:
 
 
 def regime_node(state: PipelineState) -> PipelineState:
-    """Calcule le régime macro si dbt a réussi."""
+    #Calcule le régime macro si dbt a réussi.
     logger.info("[graph] regime_node démarré")
 
     if not state.get("dbt_success"):
@@ -206,15 +172,10 @@ def regime_node(state: PipelineState) -> PipelineState:
 
 
 def decision_node(state: PipelineState) -> PipelineState:
-    """
-    Calcule les décisions structurées par ticker (Decision Engine) et les
-    persiste dans la table `decisions`, si dbt a réussi.
 
-    Tourne en parallèle d'alert_node/regime_node : ne dépend que de
-    dbt_run_node (lit mart_portfolio_value directement, jamais la table
-    alerts), aucun appel réseau — parallélisation sûre, même raisonnement
-    que pour alert_node/regime_node.
-    """
+    #Calcule les décisions structurées par ticker (Decision Engine) et les
+    #persiste dans la table `decisions`, si dbt a réussi.
+
     logger.info("[graph] decision_node démarré")
 
     if not state.get("dbt_success"):
@@ -237,16 +198,9 @@ def decision_node(state: PipelineState) -> PipelineState:
 
 
 def analyst_node(state: PipelineState) -> PipelineState:
-    """
-    Génère la synthèse finale via l'Agent Analyste.
+    
+    #Génère la synthèse finale via l'Agent Analyste.
 
-    Ce nœud est le seul endroit du graphe où un appel LLM peut être fait.
-    Il s'exécute après alert_node, regime_node et decision_node.
-
-    NOTE : decisions n'est pas encore transmis à run_analyst_agent ici —
-    c'est l'objet de la prochaine étape (modifier run_analyst_agent pour
-    accepter et utiliser ce paramètre).
-    """
     logger.info("[graph] analyst_node démarré")
 
     if not state.get("dbt_success"):
@@ -272,17 +226,10 @@ def analyst_node(state: PipelineState) -> PipelineState:
         }
 
 
-# ---------------------------------------------------------------------------
 # Construction du graphe
-# ---------------------------------------------------------------------------
-
 def build_graph():
-    """
-    Construit et compile le graphe LangGraph.
+    #Construit et compile le graphe LangGraph.
 
-    Flux :
-        data → macro → dbt → (alert / regime / decision) → analyst
-    """
     graph = StateGraph(PipelineState)
 
     graph.add_node("data_node", data_node)
@@ -309,11 +256,6 @@ def build_graph():
     graph.add_edge("analyst_node", END)
 
     return graph.compile()
-
-
-# ---------------------------------------------------------------------------
-# Test rapide — python -m app.orchestration.graph
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

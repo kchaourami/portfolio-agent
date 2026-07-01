@@ -1,32 +1,10 @@
 """
-analyst_agent.py
-==================
-Emplacement cible : app/agents/analyst/analyst_agent.py
+Agent Analyste : Reçoit un prompt structuré déjà construit par 
+prompt_builder.py et produit une synthèse en langage naturel.
 
-Agent Analyste — le SEUL agent du projet qui fait un appel LLM. Reçoit un
-prompt structuré déjà construit par prompt_builder.py (aucune donnée
-brute) et produit une synthèse en langage naturel.
-
-Règle absolue (cf. doc LLM : Construction des prompts) : le LLM ne reçoit
-jamais de données brutes et ne doit jamais inventer de chiffres — tout ce
-qu'il commente a déjà été calculé de façon déterministe par les pipelines
-en amont (Agent Data, Agent Risk, Agent Macro).
-
----------------------------------------------------------------------------
-CHOIX TECHNIQUE — Gemini, API generateContent (pas Interactions API)
----------------------------------------------------------------------------
-Package requis : `google-genai` (pip install google-genai). Le package
-`google-generativeai` est déprécié, à ne plus utiliser.
-
-Gemini propose deux façons d'appeler le modèle :
-- Interactions API : nouvelle, optimisée pour les workflows agentiques
-  multi-tours avec état côté serveur — actuellement en bêta/preview
-- generateContent : l'API "classique", stable, recommandée explicitement
-  par Google pour les déploiements de production
-
-Notre besoin est un seul appel sans état (un prompt → une réponse), donc
-generateContent est le bon choix — pas besoin de la gestion de
-conversation multi-tours qu'apporte l'Interactions API.
+Notre besoin est un seul appel sans état (un prompt > une réponse), donc
+generateContent est le bon choix ( pas besoin de la gestion de
+conversation multi-tours qu'apporte l'Interactions API).
 """
 
 from __future__ import annotations
@@ -71,9 +49,8 @@ def generate_synthesis(
     retries: int = 2,
     backoff_seconds: float = 5.0,
 ) -> str:
-    """
-    Appelle l'API Gemini generateContent avec retry simple.
-    """
+    
+    #Appelle l'API Gemini generateContent avec retry simple.
     if not settings.GEMINI_API_KEY:
         raise RuntimeError(
             "GEMINI_API_KEY manquante — ajoutez-la dans .env "
@@ -120,17 +97,8 @@ def run_analyst_agent(
     decisions: list[TickerDecision] | None = None,   
     mark_alerts_read: bool = True,
 ) -> str:
-    """
-    Point d'entrée utilisé par l'orchestrateur LangGraph.
-
-    Si `alerts` est fourni par le graphe, l'Agent Analyste utilise
-    directement ces alertes au lieu de relire uniquement les alertes
-    non lues depuis DuckDB.
-
-    Cela garantit que les alertes détectées par alert_node pendant le run
-    sont bien incluses dans le prompt Analyste.
-    """
-
+    
+    #Point d'entrée utilisé par l'orchestrateur LangGraph.
     if alerts is None:
         prompt, alerts = build_prompt_from_db(repo)
 
@@ -168,18 +136,11 @@ def run_analyst_agent(
         repo.mark_alerts_read(alert_ids)
         logger.info("%d alerte(s) marquée(s) comme lue(s)", len(alert_ids))
 
-    if settings.DEMO_MODE:
-        synthesis = f" {settings.DEMO_DISCLAIMER}\n\n{synthesis}"
-
     synthesis = f"{synthesis}\n\n---\n_{NOT_ADVICE_DISCLAIMER}_"
 
     return synthesis
 
-
-# ---------------------------------------------------------------------------
 # Test rapide — python -m app.agents.analyst.analyst_agent
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 

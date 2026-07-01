@@ -1,14 +1,6 @@
 """
-alert_engine.py
-================
-Emplacement cible dans le repo : app/pipeline/alert_engine.py
-
-Agent Risk — partie PERSISTANCE.
-
 Rôle :
-- Transformer les RiskBreach (sortie de risk_calculator.py) en objets Alert
-  complets (ajout d'un alert_id déterministe, d'un message en français,
-  et de triggered_at)
+- Transformer les RiskBreach (sortie de risk_calculator.py) en objets Alert complets
 - Écrire les nouvelles alertes en base via DuckDBRepository.insert_alerts()
 
 Aucun calcul de seuil ici — c'est le rôle de risk_calculator.py. Ce module
@@ -30,38 +22,21 @@ from app.storage.duckdb_repository import DuckDBRepository
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Génération de l'alert_id — déterministe, pour éviter les doublons
-# ---------------------------------------------------------------------------
+# Génération de l'alert_id pour éviter les doublons
 
 def _generate_alert_id(breach: RiskBreach) -> str:
-    """
-    ID déterministe basé sur (date, ticker, type, label).
 
-    Deux exécutions le même jour sur la même anomalie produisent le même
-    alert_id, ce qui permet à DuckDBRepository.insert_alerts() de ne pas
-    créer de doublon (filtre "WHERE alert_id NOT IN").
+    #ID déterministe basé sur (date, ticker, type, label).
 
-    Limitation connue (MVP) : si la valeur du breach change en cours de
-    journée (re-run après mise à jour des prix), l'alerte déjà en base
-    n'est PAS mise à jour — seule la première détection du jour est
-    conservée. Logique insert-or-ignore, pas upsert. À revisiter en V2
-    si on veut refléter la dernière valeur connue.
-    """
     raw = f"{breach.date}_{breach.ticker or 'PORTFOLIO'}_{breach.alert_type.value}_{breach.label or ''}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
-# ---------------------------------------------------------------------------
-# Génération du message — court, factuel, en français
-# ---------------------------------------------------------------------------
 
 def _pct(value: float) -> str:
     return f"{value * 100:.2f}%"
 
 
 def _build_message(breach: RiskBreach) -> str:
-    """Construit un message court et factuel à partir d'un RiskBreach."""
+    #Construit un message court et factuel à partir d'un RiskBreach.
 
     if breach.alert_type == AlertType.PRICE_DROP:
         return (
@@ -97,16 +72,13 @@ def _build_message(breach: RiskBreach) -> str:
             f"(seuil {_pct(breach.threshold)})"
         )
 
-    # Filet de sécurité si un futur AlertType n'a pas encore de template dédié
     return f"{breach.alert_type.value} détecté | valeur={breach.value} | seuil={breach.threshold}"
 
 
-# ---------------------------------------------------------------------------
 # Construction des Alert
-# ---------------------------------------------------------------------------
 
 def build_alert(breach: RiskBreach) -> Alert:
-    """Transforme un RiskBreach en Alert complète, prête à être persistée."""
+    #Transforme un RiskBreach en Alert complète, prête à être persistée.
     return Alert(
         alert_id=_generate_alert_id(breach),
         ticker=breach.ticker,
@@ -120,22 +92,13 @@ def build_alert(breach: RiskBreach) -> Alert:
 
 
 def build_alerts(breaches: list[RiskBreach]) -> list[Alert]:
-    """Transforme une liste de RiskBreach en liste d'Alert."""
+    #Transforme une liste de RiskBreach en liste d'Alert.
     return [build_alert(b) for b in breaches]
 
-
-# ---------------------------------------------------------------------------
-# Persistance
-# ---------------------------------------------------------------------------
-
 def persist_alerts(alerts: list[Alert], repo: DuckDBRepository) -> int:
-    """
-    Écrit les alertes en base.
 
-    Les doublons (même alert_id) sont automatiquement ignorés par
-    DuckDBRepository.insert_alerts() — pas d'erreur si une alerte du jour
-    a déjà été écrite lors d'un run précédent.
-    """
+    #ecrire les alertes en base.
+
     if not alerts:
         logger.info("persist_alerts: aucune alerte à écrire")
         return 0
@@ -158,19 +121,15 @@ def persist_alerts(alerts: list[Alert], repo: DuckDBRepository) -> int:
 
     return repo.insert_alerts(df)
 
-
-# ---------------------------------------------------------------------------
 # Orchestration
-# ---------------------------------------------------------------------------
 
 def run_alert_engine(repo: DuckDBRepository) -> list[Alert]:
-    """
-    Point d'entrée utilisé par l'orchestrateur (LangGraph).
 
-    Enchaîne : calcul des breaches (risk_calculator) → mise en forme (Alert)
-    → persistance (DuckDB). Retourne les Alert traitées (créées ou déjà
-    existantes en base) pour permettre un logging immédiat côté orchestrateur.
-    """
+    #Point d'entrée utilisé par l'orchestrateur (LangGraph).
+    #Enchaîne : calcul des breaches (risk_calculator) → mise en forme (Alert)
+    #→ persistance (DuckDB). Retourne les Alert traitées (créées ou déjà
+    #existantes en base) pour permettre un logging immédiat côté orchestrateur.
+
     breaches = run_risk_calculator(repo)
     alerts = build_alerts(breaches)
     written = persist_alerts(alerts, repo)
@@ -181,11 +140,6 @@ def run_alert_engine(repo: DuckDBRepository) -> list[Alert]:
         written,
     )
     return alerts
-
-
-# ---------------------------------------------------------------------------
-# Test rapide — python -m app.pipeline.alert_engine
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

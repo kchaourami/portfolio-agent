@@ -6,31 +6,24 @@ class Settings(BaseSettings):
     DB_PATH: str = "data/portfolio.duckdb"
     DBT_PROJECT_DIR: str = "dbt_project"
 
-    # API keys (optionnelles pour le MVP)
+    # API keys 
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-3.5-flash"
+    GEMINI_MODEL: str = "gemini-2.5-flash"
 
-    # Portfolio (portefeuille par défaut pour les tests)
+    # Portfolio 
     DEFAULT_TICKERS: list[str] = [
         "BNP.PA", "MC.PA", "SAN.PA", "AIR.PA", "OR.PA",
-        "CW8.PA", "PAEEM.PA"  # ETF PEA
+        "CW8.PA", "PAEEM.PA"  
     ]
     BENCHMARK_TICKER: str = "^FCHI"  # CAC 40
 
     # Alertes — seuils par défaut
-    ALERT_PRICE_DROP_PCT: float = -0.03    # -3%
-    ALERT_DRAWDOWN_PCT: float = -0.05      # -5%
-    ALERT_VOLUME_RATIO: float = 2.0        # 2x volume moyen
-    ALERT_UNDERPERF_PCT: float = -0.03     # -3% vs CAC 40
-    ALERT_VOLATILITY_PCT: float = 0.02              # vol_20d
-    ALERT_SECTOR_CONCENTRATION_PCT: float = 0.30    # poids max par secteur
-
-        # Démo — distingue les données fictives des vraies, pour plus tard
-    DEMO_MODE: bool = True
-    DEMO_DISCLAIMER: str = (
-        "Portefeuille fictif à des fins de démonstration — "
-       "ne reflète pas une position d'investissement réelle."
-    )
+    ALERT_PRICE_DROP_PCT: float = -0.03    
+    ALERT_DRAWDOWN_PCT: float = -0.05     
+    ALERT_VOLUME_RATIO: float = 2.0        
+    ALERT_UNDERPERF_PCT: float = -0.03     
+    ALERT_VOLATILITY_PCT: float = 0.02              
+    ALERT_SECTOR_CONCENTRATION_PCT: float = 0.30    
 
     class Config:
         env_file = ".env"

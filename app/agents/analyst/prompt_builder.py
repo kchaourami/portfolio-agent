@@ -1,20 +1,9 @@
 """
-prompt_builder.py
-==================
-Emplacement cible : app/agents/analyst/prompt_builder.py
+Construit le prompt structuré de l'Agent Analyste. 
+Ce module ne fait aucun appel LLM — uniquement de la mise en forme de texte.
 
-Construit le prompt structuré de l'Agent Analyste. AUCUNE donnée brute
-n'est jamais transmise au LLM : tout ce qui suit a déjà été calculé de
-façon déterministe par les pipelines (mart_portfolio_value, alerts,
-macro_regime.py, decision_engine.py). Ce module ne fait aucun appel
-LLM — uniquement de la mise en forme de texte.
-
-CHANGEMENT IMPORTANT (Decision Engine) : la partie 5 du prompt ne demande
-plus au LLM de GÉNÉRER des recommandations — les décisions
-(BUY_WATCH/HOLD/WATCH/REDUCE/SELL_SIGNAL/INCREASE) sont désormais déjà
-calculées par decision_engine.py (entièrement déterministe) et fournies
-dans le bloc [DÉCISIONS PROPOSÉES]. Le rôle du LLM se limite à les
-EXPLIQUER en langage naturel, jamais à les recalculer ou les contredire.
+Le rôle du LLM se limite à expliquer en langage naturel,
+jamais à les recalculer ou les contredire.
 """
 
 from __future__ import annotations
@@ -77,36 +66,28 @@ Règles absolues :
   jamais suggérer un achat pour une décision REDUCE ou SELL_SIGNAL)"""
 
 
-# ---------------------------------------------------------------------------
 # Formatage — chaque fonction gère le cas "donnée manquante" explicitement
-# (jamais de valeur par défaut inventée, on affiche "N/A")
-# ---------------------------------------------------------------------------
 
 def _fmt_pct(value: float | None) -> str:
-    """Formate un ratio décimal (0.031) en pourcentage signé (+3.10)."""
+    #Formate un ratio décimal (0.031) en pourcentage signé (+3.10).
     return f"{value * 100:+.2f}" if value is not None else "N/A"
 
 
 def _fmt_pct_already(value: float | None) -> str:
-    """Formate une valeur déjà en %, pas en décimal (cas de macro_regime)."""
+    #Formate une valeur déjà en %, pas en décimal (cas de macro_regime).
     return f"{value:.2f}" if value is not None else "N/A"
 
 
 def _fmt_eur(value: float | None) -> str:
-    """Formate un montant en euros avec séparateur de milliers (espace)."""
+    #Formate un montant en euros avec séparateur de milliers (espace).
     return f"{value:,.2f}".replace(",", " ") if value is not None else "N/A"
 
 
-# ---------------------------------------------------------------------------
 # Agrégats portefeuille — moyennes pondérées par le poids de chaque ligne
-# ---------------------------------------------------------------------------
 
 def compute_portfolio_summary(df_portfolio: pd.DataFrame) -> dict:
-    """
-    Calcule les agrégats nécessaires au bloc [PORTEFEUILLE] du prompt.
-    Retourne None pour chaque champ si la donnée sous-jacente est absente
-    — jamais une valeur inventée pour combler un trou.
-    """
+    #Calcule les agrégats nécessaires au bloc [PORTEFEUILLE] du prompt.
+
     if df_portfolio.empty:
         return {"total_value": None, "daily_perf": None, "relative_perf": None, "drawdown": None}
 
@@ -125,29 +106,19 @@ def compute_portfolio_summary(df_portfolio: pd.DataFrame) -> dict:
 
 
 def format_signals(alerts: list[Alert]) -> str:
-    """
-    Formate la liste des signaux actifs — réutilise le champ `message`
-    déjà construit par alert_engine.py (déjà factuel, déjà en français,
-    pas besoin de reformater le contenu).
-    """
+    #Formate la liste des signaux actifs — réutilise le champ 'message' déjà construit par alert_engine.py 
+    
     if not alerts:
         return "Aucun signal actif."
     return "\n".join(f"- {alert.message}" for alert in alerts)
 
 
 def format_composition(df_portfolio: pd.DataFrame) -> str:
-    """
-    Liste ticker / secteur / poids pour chaque ligne du portefeuille,
-    triée par poids décroissant — permet à l'agent de relier une alerte
-    de secteur à un ticker précis sans inventer.
+    
+    #Liste ticker / secteur / poids pour chaque ligne du portefeuille,
+    #triée par poids décroissant, permet à l'agent de relier une alerte
+    #de secteur à un ticker précis sans inventer.
 
-    Distingue explicitement "vrai ETF sans secteur" (asset_type='etf')
-    de "action dont le secteur est temporairement indisponible"
-    (yfinance échoue régulièrement sur la récupération des métadonnées,
-    observé à plusieurs reprises dans ce projet) — les deux cas
-    affichaient à tort "(ETF)" auparavant, ce qui aurait pu laisser
-    croire à l'agent qu'une action comme AIR.PA ou BNP.PA était un ETF.
-    """
     if df_portfolio.empty:
         return "Aucune position en portefeuille."
 
@@ -169,11 +140,9 @@ def format_composition(df_portfolio: pd.DataFrame) -> str:
 
 
 def format_decisions(decisions: list[TickerDecision]) -> str:
-    """
-    Formate les décisions structurées du Decision Engine — code anglais
-    (référence standard) + libellé français + niveau de confiance +
-    raisons. L'agent doit EXPLIQUER ces décisions, jamais en inventer.
-    """
+    
+    #Formate les décisions structurées du Decision Engine.
+    
     if not decisions:
         return "Aucune décision disponible."
 
@@ -188,9 +157,7 @@ def format_decisions(decisions: list[TickerDecision]) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
 # Construction du prompt
-# ---------------------------------------------------------------------------
 
 def build_analyst_prompt(
     df_portfolio: pd.DataFrame,
@@ -198,7 +165,8 @@ def build_analyst_prompt(
     regime: MacroRegime,
     decisions: list[TickerDecision] | None = None,
 ) -> str:
-    """Assemble le prompt structuré complet à partir des contextes déjà calculés."""
+    #Assemble le prompt structuré complet à partir des contextes déjà calculés.
+    
     summary = compute_portfolio_summary(df_portfolio)
     decisions = decisions or []
 
@@ -219,12 +187,10 @@ def build_analyst_prompt(
 
 
 def build_prompt_from_db(repo: DuckDBRepository) -> tuple[str, list[Alert]]:
-    """
-    Point d'entrée pratique : lit tout depuis DuckDB (mart_portfolio_value,
-    alertes non lues, régime macro) et calcule les décisions à la volée
-    (compute_decisions — pur calcul, ne persiste rien ici ; la
-    persistance a lieu via decision_node dans le graphe orchestré).
-    """
+    
+    #Point d'entrée pratique : lit tout depuis DuckDB (mart_portfolio_value,
+    #alertes non lues, régime macro) et calcule les décisions à la volée.
+    
     df_portfolio = repo.execute_query("SELECT * FROM main_marts.mart_portfolio_value")
 
     alerts_df = repo.fetch_alerts(unread_only=True)
@@ -247,11 +213,6 @@ def build_prompt_from_db(repo: DuckDBRepository) -> tuple[str, list[Alert]]:
 
     prompt = build_analyst_prompt(df_portfolio, alerts, regime, decisions)
     return prompt, alerts
-
-
-# ---------------------------------------------------------------------------
-# Test rapide — python -m app.agents.analyst.prompt_builder
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     with DuckDBRepository() as repo:

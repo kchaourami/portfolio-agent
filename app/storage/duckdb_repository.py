@@ -1,19 +1,15 @@
 """
-duckdb_repository.py
-====================
-Couche de persistance DuckDB pour le projet portfolio-agent.
-
-Responsabilités :
+Role :
 - Initialiser le schéma des tables (raw + marts)
 - Écrire les données collectées (prices, macro)
 - Lire les données pour les agents (risk, analyste)
-- Aucune logique métier ici — uniquement du stockage
+- stockage
 
 Tables gérées :
-  raw_prices       ← sortie de DataCollector
-  raw_macro        ← sortie de MacroCollector (à venir)
-  portfolio        ← positions de l'utilisateur
-  alerts           ← alertes générées par l'Agent Risk
+  raw_prices : sortie de DataCollector
+  raw_macro  : sortie de MacroCollector 
+  portfolio  : positions de l'utilisateur
+  alerts     : alertes générées par l'Agent Risk
 """
 
 from __future__ import annotations
@@ -31,10 +27,7 @@ from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
 # Schéma SQL des tables
-# ---------------------------------------------------------------------------
 
 DDL_RAW_PRICES = """
 CREATE TABLE IF NOT EXISTS raw_prices (
@@ -124,67 +117,50 @@ CREATE TABLE IF NOT EXISTS decisions (
 
 ALL_DDL = [DDL_RAW_PRICES, DDL_RAW_MACRO, DDL_PORTFOLIO, DDL_ALERTS, DDL_SYNTHESES, DDL_DECISIONS]
 
-
-# ---------------------------------------------------------------------------
 # Repository
-# ---------------------------------------------------------------------------
 
 class DuckDBRepository:
-    """
-    Couche d'accès aux données DuckDB.
 
-    Usage recommandé :
-        repo = DuckDBRepository()
-        repo.initialize()
-        repo.upsert_prices(df)
-        df = repo.fetch_prices(ticker="BNP.PA")
-        repo.close()
-
-    Ou en context manager :
-        with DuckDBRepository() as repo:
-            repo.upsert_prices(df)
-    """
+    #Couche d'accès aux données DuckDB.
 
     def __init__(self, db_path: str | None = None) -> None:
         self._db_path = db_path or settings.DB_PATH
         self._conn: duckdb.DuckDBPyConnection | None = None
 
-    # ------------------------------------------------------------------
     # Connexion
-    # ------------------------------------------------------------------
 
     def connect(self) -> None:
-        """Ouvre la connexion DuckDB. Crée le fichier si inexistant."""
+
+        #Ouvre la connexion DuckDB.
+
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = duckdb.connect(self._db_path)
         logger.info("DuckDB connecté | path=%s", self._db_path)
 
     def close(self) -> None:
-        """Ferme proprement la connexion."""
+
+        #Fermer la connexion.
+
         if self._conn:
             self._conn.close()
             self._conn = None
             logger.info("DuckDB connexion fermée")
 
     def initialize(self) -> None:
-        """
-        Crée toutes les tables si elles n'existent pas encore.
-        Idempotent — peut être appelé à chaque démarrage.
-        """
+        
+        #Crée toutes les tables si elles n'existent pas encore.
+
         self._ensure_connected()
         for ddl in ALL_DDL:
             self._conn.execute(ddl)
         logger.info("Schéma DuckDB initialisé (%d tables)", len(ALL_DDL))
 
-    # ------------------------------------------------------------------
     # Écriture — raw_prices
-    # ------------------------------------------------------------------
 
     def upsert_prices(self, df: pd.DataFrame) -> int:
-        """
-        Insère ou met à jour les prix dans raw_prices.
-        Stratégie : DELETE + INSERT sur les (date, ticker) existants.
-        """
+
+        #Insère ou met à jour les prix dans raw_prices.
+
         self._ensure_connected()
 
         if df.empty:
@@ -284,20 +260,12 @@ class DuckDBRepository:
         logger.info("upsert_prices terminé | lignes=%d", count)
         return count    
 
-    # ------------------------------------------------------------------
     # Écriture — raw_macro
-    # ------------------------------------------------------------------
 
     def upsert_macro(self, df: pd.DataFrame) -> int:
-        """
-        Insère ou met à jour les données macro dans raw_macro.
+        
+        #Insère ou met à jour les données macro dans raw_macro.
 
-        Args:
-            df : DataFrame avec colonnes (date, series_key, value, source, fetched_at)
-
-        Returns:
-            Nombre de lignes écrites
-        """
         self._ensure_connected()
 
         if df.empty:
@@ -326,9 +294,7 @@ class DuckDBRepository:
         logger.info("upsert_macro terminé | lignes=%d", count)
         return count
 
-    # ------------------------------------------------------------------
     # Lecture — raw_prices
-    # ------------------------------------------------------------------
 
     def fetch_prices(
         self,
@@ -337,18 +303,9 @@ class DuckDBRepository:
         end: date | None = None,
         asset_type: str | None = None,
     ) -> pd.DataFrame:
-        """
-        Lit les prix depuis raw_prices avec filtres optionnels.
+        
+        #Lit les prix depuis raw_prices avec filtres optionnels.
 
-        Args:
-            ticker     : filtrer sur un ticker précis
-            start      : date de début incluse
-            end        : date de fin incluse
-            asset_type : "action" | "etf" | "index"
-
-        Returns:
-            DataFrame trié par (ticker, date)
-        """
         self._ensure_connected()
 
         conditions: list[str] = []
@@ -381,10 +338,9 @@ class DuckDBRepository:
         return df
 
     def fetch_latest_prices(self) -> pd.DataFrame:
-        """
-        Retourne le dernier prix connu pour chaque ticker.
-        Utile pour calculer la valeur courante du portefeuille.
-        """
+        
+        #Retourne le dernier prix connu pour chaque ticker. Utile pour calculer la valeur courante du portefeuille.
+        
         self._ensure_connected()
 
         query = """
@@ -403,16 +359,16 @@ class DuckDBRepository:
         start: date | None = None,
         end: date | None = None,
     ) -> pd.DataFrame:
-        """Retourne l'historique du benchmark (CAC 40 par défaut)."""
+        
+        #Retourne l'historique du benchmark (CAC 40 par défaut).
+
         return self.fetch_prices(
             ticker=settings.BENCHMARK_TICKER,
             start=start,
             end=end,
         )
 
-    # ------------------------------------------------------------------
     # Lecture — raw_macro
-    # ------------------------------------------------------------------
 
     def fetch_macro(
         self,
@@ -420,7 +376,9 @@ class DuckDBRepository:
         start: date | None = None,
         end: date | None = None,
     ) -> pd.DataFrame:
-        """Lit les données macro avec filtres optionnels."""
+        
+        #Lit les données macro avec filtres optionnels.
+
         self._ensure_connected()
 
         conditions: list[str] = []
@@ -446,7 +404,9 @@ class DuckDBRepository:
         return self._conn.execute(query, params).df()
 
     def fetch_latest_macro(self) -> pd.DataFrame:
-        """Retourne la dernière valeur connue de chaque série macro."""
+
+        #Retourne la dernière valeur connue de chaque série macro.
+
         self._ensure_connected()
 
         query = """
@@ -457,17 +417,12 @@ class DuckDBRepository:
         """
         return self._conn.execute(query).df()
 
-    # ------------------------------------------------------------------
     # Portefeuille
-    # ------------------------------------------------------------------
 
     def upsert_portfolio(self, df: pd.DataFrame) -> int:
-        """
-        Insère ou remplace les positions du portefeuille.
+        
+        #Insère ou remplace les positions du portefeuille.
 
-        Args:
-            df : colonnes (ticker, quantity, purchase_price, purchase_date, label)
-        """
         self._ensure_connected()
 
         required = {"ticker", "quantity", "purchase_price"}
@@ -497,21 +452,20 @@ class DuckDBRepository:
         return count
 
     def fetch_portfolio(self) -> pd.DataFrame:
-        """Retourne toutes les positions du portefeuille."""
+
+        #Retourne toutes les positions du portefeuille.
+
         self._ensure_connected()
         return self._conn.execute(
             "SELECT * FROM portfolio ORDER BY ticker"
         ).df()
 
-    # ------------------------------------------------------------------
     # Alertes
-    # ------------------------------------------------------------------
 
     def insert_alerts(self, df: pd.DataFrame) -> int:
-        """
-        Insère de nouvelles alertes (sans écraser les existantes).
-        Les doublons sur alert_id sont ignorés.
-        """
+        
+        #Insère de nouvelles alertes (sans écraser les existantes).
+
         self._ensure_connected()
 
         if df.empty:
@@ -538,7 +492,9 @@ class DuckDBRepository:
         return count
 
     def fetch_alerts(self, unread_only: bool = False) -> pd.DataFrame:
-        """Retourne les alertes, optionnellement filtrées sur non-lues."""
+
+        #Retourne les alertes, optionnellement filtrées sur non-lues.
+
         self._ensure_connected()
 
         where = "WHERE is_read = false" if unread_only else ""
@@ -549,7 +505,9 @@ class DuckDBRepository:
         """).df()
 
     def mark_alerts_read(self, alert_ids: list[str]) -> None:
-        """Marque une liste d'alertes comme lues."""
+
+        #Marque une liste d'alertes comme lues.
+
         self._ensure_connected()
 
         if not alert_ids:
@@ -562,9 +520,7 @@ class DuckDBRepository:
             WHERE alert_id IN (SELECT alert_id FROM ids_df)
         """)
 
-    # ------------------------------------------------------------------
     # Syntheses (Agent Analyste)
-    # ------------------------------------------------------------------
 
     def insert_synthesis(
         self,
@@ -573,7 +529,6 @@ class DuckDBRepository:
         macro_regime: str | None = None,
         model: str | None = None,
     ) -> str:
-        """Persiste une synthèse générée par l'Agent Analyste."""
         self._ensure_connected()
 
         import uuid
@@ -599,7 +554,9 @@ class DuckDBRepository:
         return synthesis_id
 
     def fetch_latest_synthesis(self) -> pd.DataFrame:
-        """Retourne la synthèse la plus récente (1 ligne, ou vide si aucune)."""
+
+        #Retourne la synthèse la plus récente (1 ligne, ou vide si aucune).
+
         self._ensure_connected()
         return self._conn.execute("""
             SELECT * FROM syntheses
@@ -608,7 +565,9 @@ class DuckDBRepository:
         """).df()
 
     def fetch_syntheses(self, limit: int = 20) -> pd.DataFrame:
-        """Retourne les N synthèses les plus récentes."""
+
+        #Retourne les N synthèses les plus récentes.
+
         self._ensure_connected()
         return self._conn.execute(f"""
             SELECT * FROM syntheses
@@ -616,22 +575,9 @@ class DuckDBRepository:
             LIMIT {limit}
         """).df()
     
-    # ------------------------------------------------------------------
     # Décisions (Decision Engine)
-    # ------------------------------------------------------------------
  
     def insert_decisions(self, decisions: list, generated_at=None) -> int:
-        """
-        Persiste les décisions d'un run — une ligne par ticker. Toutes
-        les décisions du même run partagent le même generated_at, ce qui
-        permet de les regrouper facilement avec fetch_latest_decisions().
- 
-        Args:
-            decisions : liste de TickerDecision (decision_models.py)
-            generated_at : timestamp partagé pour tout le run — si None,
-                           pd.Timestamp.now() est utilisé une seule fois
-                           pour tous les tickers du run
-        """
         self._ensure_connected()
  
         if not decisions:
@@ -672,7 +618,9 @@ class DuckDBRepository:
         return count
  
     def fetch_latest_decisions(self) -> pd.DataFrame:
-        """Retourne toutes les décisions du run le plus récent (même generated_at)."""
+
+        #Retourne toutes les décisions du run le plus récent (même generated_at).
+
         self._ensure_connected()
         return self._conn.execute("""
             SELECT * FROM decisions
@@ -681,7 +629,9 @@ class DuckDBRepository:
         """).df()
  
     def fetch_decisions_history(self, ticker: str | None = None, limit: int = 50) -> pd.DataFrame:
-        """Retourne l'historique des décisions, optionnellement filtré par ticker."""
+        
+        #Retourne l'historique des décisions, optionnellement filtré par ticker.
+
         self._ensure_connected()
         if ticker:
             return self._conn.execute(
@@ -694,12 +644,12 @@ class DuckDBRepository:
             {"limit": limit},
         ).df()
     
-    # ------------------------------------------------------------------
     # Utilitaires
-    # ------------------------------------------------------------------
 
     def table_info(self) -> pd.DataFrame:
-        """Retourne le nombre de lignes par table — utile pour les tests."""
+
+        #Retourne le nombre de lignes par table — utile pour les tests.
+
         self._ensure_connected()
 
         tables = ["raw_prices", "raw_macro", "portfolio", "alerts"]
@@ -716,16 +666,9 @@ class DuckDBRepository:
         return pd.DataFrame(rows)
 
     def execute_query(self, query: str) -> pd.DataFrame:
-        """
-        Exécute une requête SQL arbitraire — pour dbt et les tests.
-        À ne pas exposer dans l'API publique.
-        """
         self._ensure_connected()
         return self._conn.execute(query).df()
 
-    # ------------------------------------------------------------------
-    # Privé
-    # ------------------------------------------------------------------
 
     def _ensure_connected(self) -> None:
         if self._conn is None:
@@ -743,9 +686,6 @@ class DuckDBRepository:
         if missing:
             raise ValueError(f"Colonnes manquantes dans df prices : {missing}")
 
-    # ------------------------------------------------------------------
-    # Context manager
-    # ------------------------------------------------------------------
 
     def __enter__(self) -> DuckDBRepository:
         self.connect()
@@ -754,11 +694,6 @@ class DuckDBRepository:
 
     def __exit__(self, *_) -> None:
         self.close()
-
-
-# ---------------------------------------------------------------------------
-# Test rapide — python -m app.storage.duckdb_repository
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import logging

@@ -15,7 +15,7 @@ class RawPrice:
     source: str
 
 class MarketDataProvider(ABC):
-    """Interface que tous les providers doivent implémenter."""
+    #Interface que tous les providers doivent implémenter.
 
     @abstractmethod
     def fetch_prices(
@@ -24,16 +24,16 @@ class MarketDataProvider(ABC):
         start: date,
         end: date,
     ) -> pd.DataFrame:
-        """Retourne un DataFrame normalisé avec colonnes RawPrice."""
+        #Retourne un DataFrame normalisé avec colonnes RawPrice.
         ...
 
     @abstractmethod
     def fetch_latest(self, tickers: list[str]) -> pd.DataFrame:
-        """Prix de clôture du dernier jour disponible."""
+        #Prix de cloture du dernier jour disponible.
         ...
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Nom du provider — pour logging et traçabilité."""
+        #Nom du provider — pour logging et traçabilité.
         ...

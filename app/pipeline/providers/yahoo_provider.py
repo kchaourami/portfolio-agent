@@ -10,11 +10,11 @@ logger = logging.getLogger(__name__)
 
 
 class YahooFinanceProvider(MarketDataProvider):
-    """Provider yfinance pour les données de marché MVP."""
+    #Provider yfinance pour les données de marché
 
     @property
+    #Nom du provider.
     def name(self) -> str:
-        """Nom du provider."""
         return "yfinance"
 
     def fetch_prices(
@@ -23,7 +23,7 @@ class YahooFinanceProvider(MarketDataProvider):
         start: date,
         end: date,
     ) -> pd.DataFrame:
-        """Récupère les prix historiques OHLCV depuis yfinance."""
+        #Récupère les prix historiques OHLCV depuis yfinance.
         if not tickers:
             logger.warning("Aucun ticker fourni à YahooFinanceProvider.fetch_prices")
             return self._empty_prices_frame()
@@ -145,7 +145,7 @@ class YahooFinanceProvider(MarketDataProvider):
         return result
 
     def fetch_latest(self, tickers: list[str]) -> pd.DataFrame:
-        """Récupère le dernier prix disponible pour chaque ticker."""
+        #Récupère le dernier prix disponible pour chaque ticker.
         end = date.today() + timedelta(days=1)
         start = end - timedelta(days=10)
 
@@ -175,7 +175,7 @@ class YahooFinanceProvider(MarketDataProvider):
         ticker: str,
         tickers_count: int,
     ) -> pd.DataFrame:
-        """Extrait les colonnes d'un ticker depuis la réponse yfinance."""
+        #Extrait les colonnes d'un ticker depuis la réponse yfinance.
         if tickers_count == 1:
             return data.copy()
 
@@ -188,7 +188,7 @@ class YahooFinanceProvider(MarketDataProvider):
 
     @staticmethod
     def _empty_prices_frame() -> pd.DataFrame:
-        """Retourne un DataFrame vide avec le schéma brut attendu."""
+        #Retourne un DataFrame vide avec le schéma brut attendu.
         return pd.DataFrame(
             columns=[
                 "date",
